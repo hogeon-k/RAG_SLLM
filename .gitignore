@@ -1,0 +1,42 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+
+# Application data
+data/uploads/*
+data/vector_db/*
+data/database/*
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/*
+*.log
+
+# Company documents
+*.xlsx
+*.xls
+*.xlsm
+
+# Build
+build/
+dist/
+*.spec
+
+# Keep empty directories
+!data/uploads/.gitkeep
+!data/vector_db/.gitkeep
+!data/database/.gitkeep
+!logs/.gitkeep
