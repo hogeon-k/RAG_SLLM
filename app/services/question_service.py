@@ -3,6 +3,8 @@ from __future__ import annotations
 from app.models.document import AnswerResponse, SearchResponse
 from app.repositories.database_repository import DatabaseRepository
 from app.services.answer_service import AnswerService
+from app.services.exceptions import AnswerGenerationError
+from app.services.history_service import HistoryService
 from app.services.retrieval_service import RetrievalService
 
 
@@ -12,10 +14,12 @@ class QuestionService:
         database_repository: DatabaseRepository,
         retrieval_service: RetrievalService | None = None,
         answer_service: AnswerService | None = None,
+        history_service: HistoryService | None = None,
     ) -> None:
         self._database_repository = database_repository
         self._retrieval_service = retrieval_service
         self._answer_service = answer_service
+        self._history_service = history_service
 
     def status_message(self) -> str:
         if self._database_repository.health_check():
@@ -30,4 +34,12 @@ class QuestionService:
     def answer(self, question: str, mode: str = "hybrid") -> AnswerResponse:
         if self._answer_service is None:
             raise RuntimeError("Answer service is not connected.")
-        return self._answer_service.answer(question, mode=mode)
+        try:
+            response = self._answer_service.answer(question, mode=mode)
+        except AnswerGenerationError as exc:
+            if self._history_service is not None and question.strip():
+                self._history_service.save_failure(question, mode, exc.code, exc.user_message)
+            raise
+        if self._history_service is not None:
+            self._history_service.save_answer(response)
+        return response

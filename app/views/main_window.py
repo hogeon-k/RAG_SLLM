@@ -15,11 +15,14 @@ from app.repositories.database_repository import DatabaseRepository
 from app.services.answer_service import AnswerService
 from app.services.document_extraction_service import DocumentExtractionService
 from app.services.document_service import DocumentService
+from app.services.history_service import HistoryService
 from app.services.question_service import QuestionService
 from app.services.retrieval_service import RetrievalService
 from app.services.search_index_service import SearchIndexService
 from app.viewmodels.document_viewmodel import DocumentViewModel
+from app.viewmodels.history_viewmodel import HistoryViewModel
 from app.viewmodels.question_viewmodel import QuestionViewModel
+from app.viewmodels.settings_viewmodel import SettingsViewModel
 from app.views.document_view import DocumentView
 from app.views.history_view import HistoryView
 from app.views.question_view import QuestionView
@@ -37,7 +40,8 @@ class MainWindow(QMainWindow):
         database_repository = DatabaseRepository(settings.database_path)
         retrieval_service = RetrievalService(settings)
         answer_service = AnswerService(settings, retrieval_service)
-        question_service = QuestionService(database_repository, retrieval_service, answer_service)
+        history_service = HistoryService(settings)
+        question_service = QuestionService(database_repository, retrieval_service, answer_service, history_service)
         document_service = DocumentService(settings)
         extraction_service = DocumentExtractionService(settings)
         search_index_service = SearchIndexService(settings)
@@ -56,8 +60,8 @@ class MainWindow(QMainWindow):
         self.stack.setObjectName("content_stack")
         self.stack.addWidget(QuestionView(QuestionViewModel(question_service)))
         self.stack.addWidget(DocumentView(DocumentViewModel(document_service, extraction_service, search_index_service)))
-        self.stack.addWidget(HistoryView())
-        self.stack.addWidget(SettingsView(settings))
+        self.stack.addWidget(HistoryView(HistoryViewModel(history_service)))
+        self.stack.addWidget(SettingsView(settings, SettingsViewModel(settings, database_repository)))
 
         self.sidebar.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.sidebar.setCurrentRow(0)

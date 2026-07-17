@@ -186,6 +186,65 @@ class AnswerResponse:
 
 
 @dataclass(frozen=True)
+class HistorySource:
+    history_source_id: str
+    history_id: str
+    evidence_id: str
+    chunk_id: str
+    document_id: str
+    sheet_id: str | None
+    source_rank: int
+    document_display_name: str
+    sheet_name: str
+    article: str | None
+    title: str | None
+    cell_range: str
+    cell_refs: tuple[str, ...]
+    content: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class QuestionHistory:
+    history_id: str
+    request_id: str
+    question: str
+    answer: str
+    status: str
+    insufficient_evidence: bool
+    error_code: str | None
+    error_message: str | None
+    search_mode: str
+    requested_top_k: int
+    retrieved_count: int
+    used_evidence_count: int
+    ollama_model: str | None
+    total_duration_ms: int
+    retrieval_duration_ms: int
+    generation_duration_ms: int
+    created_at: datetime
+    sources: tuple[HistorySource, ...] = ()
+
+
+@dataclass(frozen=True)
+class HistoryListResult:
+    items: list[QuestionHistory]
+    total_count: int
+    limit: int
+    offset: int
+
+
+@dataclass(frozen=True)
+class HistoryFilters:
+    search_text: str | None = None
+    status: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    limit: int = 50
+    offset: int = 0
+
+
+@dataclass(frozen=True)
 class IndexingResult:
     document_id: str
     fts_count: int

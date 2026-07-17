@@ -138,6 +138,55 @@ def initialize_database(database_path: Path) -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS question_histories (
+                history_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL UNIQUE,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                status TEXT NOT NULL,
+                insufficient_evidence INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT NULL,
+                error_message TEXT NULL,
+                search_mode TEXT NOT NULL,
+                requested_top_k INTEGER NOT NULL,
+                retrieved_count INTEGER NOT NULL,
+                used_evidence_count INTEGER NOT NULL,
+                ollama_model TEXT NULL,
+                total_duration_ms INTEGER NOT NULL DEFAULT 0,
+                retrieval_duration_ms INTEGER NOT NULL DEFAULT 0,
+                generation_duration_ms INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_question_histories_created_at ON question_histories(created_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_question_histories_status ON question_histories(status)")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS question_history_sources (
+                history_source_id TEXT PRIMARY KEY,
+                history_id TEXT NOT NULL,
+                evidence_id TEXT NOT NULL,
+                chunk_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                sheet_id TEXT NULL,
+                source_rank INTEGER NOT NULL,
+                document_display_name TEXT NOT NULL,
+                sheet_name TEXT NOT NULL,
+                article TEXT NULL,
+                title TEXT NULL,
+                cell_range TEXT NOT NULL,
+                cell_refs_json TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(history_id) REFERENCES question_histories(history_id) ON DELETE CASCADE,
+                UNIQUE(history_id, chunk_id)
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_question_history_sources_history_id ON question_history_sources(history_id)")
 
 
 def _add_column_if_missing(connection, table_name: str, column_name: str, column_definition: str) -> None:
