@@ -32,7 +32,7 @@ class MainWindow(QMainWindow):
 
         database_repository = DatabaseRepository(settings.database_path)
         question_service = QuestionService(database_repository)
-        document_service = DocumentService()
+        document_service = DocumentService(settings)
 
         self.sidebar = QListWidget()
         self.sidebar.setObjectName("sidebar")
@@ -82,9 +82,16 @@ class MainWindow(QMainWindow):
             }
             QLabel {
                 color: #242623;
-                font-size: 18px;
+                font-size: 15px;
+            }
+            QLabel#page_title {
+                font-size: 22px;
+                font-weight: 700;
+            }
+            QLabel#status_label {
+                color: #254f4a;
+                min-height: 24px;
             }
             """
         )
         self.stack.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-

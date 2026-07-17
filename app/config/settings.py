@@ -16,6 +16,7 @@ class Settings:
     data_dir: Path
     log_level: str
     ollama_host: str
+    max_xlsx_mb: int = 50
 
     @property
     def uploads_dir(self) -> Path:
@@ -37,6 +38,14 @@ class Settings:
     def database_path(self) -> Path:
         return self.database_dir / "app.sqlite3"
 
+    @property
+    def allowed_document_extensions(self) -> tuple[str, ...]:
+        return (".xlsx",)
+
+    @property
+    def max_xlsx_bytes(self) -> int:
+        return self.max_xlsx_mb * 1024 * 1024
+
     def ensure_directories(self) -> None:
         for path in (self.data_dir, self.uploads_dir, self.vector_db_dir, self.database_dir, self.logs_dir):
             path.mkdir(parents=True, exist_ok=True)
@@ -55,12 +64,20 @@ def load_settings() -> Settings:
     app_env = os.environ.get("APP_ENV", "development").strip() or "development"
     data_dir_value = os.environ.get("APP_DATA_DIR", "").strip()
     data_dir = Path(data_dir_value).expanduser() if data_dir_value else _default_data_dir(app_env)
+    max_xlsx_value = os.environ.get("APP_MAX_XLSX_MB", "50").strip() or "50"
+    try:
+        max_xlsx_mb = int(max_xlsx_value)
+    except ValueError as exc:
+        raise ValueError("APP_MAX_XLSX_MB must be an integer.") from exc
+    if max_xlsx_mb <= 0:
+        raise ValueError("APP_MAX_XLSX_MB must be greater than 0.")
+
     settings = Settings(
         app_env=app_env,
         data_dir=data_dir.resolve(),
         log_level=os.environ.get("APP_LOG_LEVEL", "INFO").strip().upper() or "INFO",
         ollama_host=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").strip(),
+        max_xlsx_mb=max_xlsx_mb,
     )
     settings.ensure_directories()
     return settings
-
