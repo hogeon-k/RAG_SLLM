@@ -16,6 +16,11 @@ class FakeDocumentViewModel:
             registration_succeeded = Signal(object)
             registration_failed = Signal(str)
             registration_finished = Signal()
+            extraction_started = Signal()
+            extraction_progress = Signal(int, str)
+            extraction_succeeded = Signal(object)
+            extraction_failed = Signal(str)
+            extraction_finished = Signal()
 
         self._signals = Signals()
         self.documents_changed = self._signals.documents_changed
@@ -23,6 +28,11 @@ class FakeDocumentViewModel:
         self.registration_succeeded = self._signals.registration_succeeded
         self.registration_failed = self._signals.registration_failed
         self.registration_finished = self._signals.registration_finished
+        self.extraction_started = self._signals.extraction_started
+        self.extraction_progress = self._signals.extraction_progress
+        self.extraction_succeeded = self._signals.extraction_succeeded
+        self.extraction_failed = self._signals.extraction_failed
+        self.extraction_finished = self._signals.extraction_finished
         self._documents = documents or []
 
     def load_documents(self):
@@ -31,6 +41,18 @@ class FakeDocumentViewModel:
 
     def register_document(self, *args, **kwargs) -> bool:
         return True
+
+    def extract_document(self, *args, **kwargs) -> bool:
+        return True
+
+    def load_chunks(self, document_id):
+        return []
+
+    def load_sheets(self, document_id):
+        return []
+
+    def extraction_counts(self, document_id):
+        return 0, 0, 0
 
 
 def _document() -> Document:

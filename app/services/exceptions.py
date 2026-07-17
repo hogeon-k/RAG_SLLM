@@ -20,3 +20,6 @@ class DuplicateDocumentError(DocumentRegistrationError):
 class DocumentStorageError(DocumentRegistrationError):
     pass
 
+
+class DocumentExtractionError(DocumentRegistrationError):
+    pass

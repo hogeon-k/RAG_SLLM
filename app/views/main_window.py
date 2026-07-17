@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from app.config.settings import Settings
 from app.repositories.database_repository import DatabaseRepository
+from app.services.document_extraction_service import DocumentExtractionService
 from app.services.document_service import DocumentService
 from app.services.question_service import QuestionService
 from app.viewmodels.document_viewmodel import DocumentViewModel
@@ -33,6 +34,7 @@ class MainWindow(QMainWindow):
         database_repository = DatabaseRepository(settings.database_path)
         question_service = QuestionService(database_repository)
         document_service = DocumentService(settings)
+        extraction_service = DocumentExtractionService(settings)
 
         self.sidebar = QListWidget()
         self.sidebar.setObjectName("sidebar")
@@ -47,7 +49,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setObjectName("content_stack")
         self.stack.addWidget(QuestionView(QuestionViewModel(question_service)))
-        self.stack.addWidget(DocumentView(DocumentViewModel(document_service)))
+        self.stack.addWidget(DocumentView(DocumentViewModel(document_service, extraction_service)))
         self.stack.addWidget(HistoryView())
         self.stack.addWidget(SettingsView(settings))
 

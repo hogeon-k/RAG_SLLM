@@ -17,6 +17,10 @@ class Settings:
     log_level: str
     ollama_host: str
     max_xlsx_mb: int = 50
+    chunk_max_chars: int = 1500
+    chunk_min_chars: int = 80
+    max_extracted_cells: int = 200000
+    include_hidden_sheets: bool = False
 
     @property
     def uploads_dir(self) -> Path:
@@ -71,6 +75,10 @@ def load_settings() -> Settings:
         raise ValueError("APP_MAX_XLSX_MB must be an integer.") from exc
     if max_xlsx_mb <= 0:
         raise ValueError("APP_MAX_XLSX_MB must be greater than 0.")
+    chunk_max_chars = _positive_int_from_env("APP_CHUNK_MAX_CHARS", 1500)
+    chunk_min_chars = _positive_int_from_env("APP_CHUNK_MIN_CHARS", 80)
+    max_extracted_cells = _positive_int_from_env("APP_MAX_EXTRACTED_CELLS", 200000)
+    include_hidden_sheets = _bool_from_env("APP_INCLUDE_HIDDEN_SHEETS", False)
 
     settings = Settings(
         app_env=app_env,
@@ -78,6 +86,33 @@ def load_settings() -> Settings:
         log_level=os.environ.get("APP_LOG_LEVEL", "INFO").strip().upper() or "INFO",
         ollama_host=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").strip(),
         max_xlsx_mb=max_xlsx_mb,
+        chunk_max_chars=chunk_max_chars,
+        chunk_min_chars=chunk_min_chars,
+        max_extracted_cells=max_extracted_cells,
+        include_hidden_sheets=include_hidden_sheets,
     )
     settings.ensure_directories()
     return settings
+
+
+def _positive_int_from_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name, str(default)).strip() or str(default)
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer.") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be greater than 0.")
+    return value
+
+
+def _bool_from_env(name: str, default: bool) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false.")

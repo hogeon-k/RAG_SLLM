@@ -62,6 +62,28 @@ class DocumentRepository:
             row = connection.execute("SELECT COUNT(*) FROM documents").fetchone()
         return int(row[0])
 
+    def update_parse_status(
+        self,
+        document_id: str,
+        status: str,
+        parsed_at: datetime | None = None,
+        parse_error: str | None = None,
+    ) -> None:
+        with open_connection(self._database_path) as connection:
+            connection.execute(
+                """
+                UPDATE documents
+                SET status = ?, parsed_at = ?, parse_error = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    parsed_at.isoformat(timespec="seconds") if parsed_at else None,
+                    parse_error,
+                    document_id,
+                ),
+            )
+
 
 def _date_to_db(value: date | None) -> str | None:
     return value.isoformat() if value else None
@@ -86,4 +108,6 @@ def _row_to_document(row) -> Document:
         status=row["status"],
         error_message=row["error_message"],
         uploaded_at=datetime.fromisoformat(row["uploaded_at"]),
+        parsed_at=datetime.fromisoformat(row["parsed_at"]) if "parsed_at" in row.keys() and row["parsed_at"] else None,
+        parse_error=row["parse_error"] if "parse_error" in row.keys() else None,
     )
