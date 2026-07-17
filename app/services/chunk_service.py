@@ -26,6 +26,7 @@ class RowText:
     min_col: int
     max_row: int
     max_col: int
+    cells: tuple[ParsedCell, ...]
 
 
 class ChunkService:
@@ -55,8 +56,18 @@ class ChunkService:
         section: str | None = None
         article: str | None = None
         title: str | None = None
+        previous_row_index: int | None = None
+        force_general_chunk = False
 
         for row in rows:
+            gap_is_strong_boundary = previous_row_index is not None and row.row_index - previous_row_index >= 3
+            if gap_is_strong_boundary and active_rows:
+                chunks.extend(self._flush_rows(document_id, sheet_id, sheet_name, active_rows, section, article, title, created_at))
+                active_rows = []
+                article = None
+                title = None
+                force_general_chunk = _is_reference_row(row)
+
             row_section, row_article, row_title, _paragraph = _classify(row.text)
             if row_section:
                 section = row_section
@@ -66,12 +77,17 @@ class ChunkService:
                 active_rows = []
             if row_article:
                 article = row_article
-                title = row_title
+                title = row_title or _title_from_adjacent_cell(row)
+                force_general_chunk = False
+            elif force_general_chunk:
+                article = None
+                title = None
 
             if len(_join_rows(active_rows + [row])) > self._max_chars and active_rows:
                 chunks.extend(self._flush_rows(document_id, sheet_id, sheet_name, active_rows, section, article, title, created_at))
                 active_rows = []
             active_rows.append(row)
+            previous_row_index = row.row_index
 
         if active_rows:
             chunks.extend(self._flush_rows(document_id, sheet_id, sheet_name, active_rows, section, article, title, created_at))
@@ -130,6 +146,7 @@ def _rows_for_sheet(cells: tuple[ParsedCell, ...], sheet_id: str) -> list[RowTex
                 min_col=min_col,
                 max_row=max_row,
                 max_col=max_col,
+                cells=tuple(row_cells),
             )
         )
     return rows
@@ -144,6 +161,33 @@ def _classify(text: str) -> tuple[str | None, str | None, str | None, str | None
     title = article_match.group(2).strip() if article_match and article_match.group(2) else None
     paragraph = paragraph_match.group(1) if paragraph_match else None
     return section, article, title, paragraph
+
+
+def _title_from_adjacent_cell(row: RowText) -> str | None:
+    cells = [cell for cell in row.cells if cell.text_value.strip()]
+    if len(cells) < 2:
+        return None
+    first_cell = cells[0]
+    first_section, first_article, first_title, _paragraph = _classify(first_cell.text_value)
+    if not first_article or first_title:
+        return None
+    candidate = cells[1].text_value.strip()
+    if not candidate or len(candidate) > 80:
+        return None
+    candidate_section, candidate_article, _candidate_title, candidate_paragraph = _classify(candidate)
+    if candidate_section or candidate_article or candidate_paragraph:
+        return None
+    return candidate
+
+
+def _is_reference_row(row: RowText) -> bool:
+    cells = [cell for cell in row.cells if cell.text_value.strip()]
+    if not cells:
+        return False
+    first = cells[0].text_value.strip()
+    if first not in {"참고", "비고", "주의", "안내"}:
+        return False
+    return len(first) <= 10
 
 
 def _split_rows_by_length(rows: list[RowText], max_chars: int) -> list[list[RowText]]:

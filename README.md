@@ -58,6 +58,34 @@ python -m pytest -q
 
 GUI 테스트는 `pytest-qt`를 사용하며 실제 프로젝트 DB 대신 `tmp_path` 임시 경로를 사용합니다.
 
+## 테스트용 더미 엑셀 생성
+
+Goal 1과 Goal 2를 수동 검증하기 위한 가상 규정 XLSX를 생성할 수 있습니다. 모든 내용은 기능 검증용 더미 데이터이며 실제 회사 정보나 개인정보를 포함하지 않습니다.
+
+```powershell
+python scripts/generate_goal2_test_workbooks.py
+python scripts/verify_goal2_test_workbooks.py
+python scripts/inspect_goal2_parsing.py
+```
+
+출력 위치:
+
+```text
+data/test_workbooks/
+```
+
+생성 파일:
+
+- `goal2_regulations_fixture.xlsx`: 정상 등록 및 추출 검증용 주 문서
+- `goal2_regulations_fixture_duplicate.xlsx`: 주 문서의 바이트 단위 복사본으로 SHA-256 중복 검증용
+- `goal2_regulations_fixture_modified.xlsx`: 같은 구조에서 일부 내용과 버전만 변경한 별도 등록 검증용
+- `goal2_corrupted.xlsx`: 확장자만 `.xlsx`인 손상 파일 검증용
+- `goal2_fixture_manifest.json`: 생성 파일, 해시, 시트 구조, 주요 검증 포인트 설명
+
+`inspect_goal2_parsing.py`는 기존 `ExcelParserService`와 `ChunkService`로 파일을 직접 읽어 요약을 출력하며 개발 DB에는 저장하지 않습니다. 생성된 XLSX와 manifest는 재현 가능한 산출물이므로 Git 추적 대상에서 제외됩니다.
+
+휴가규정 더미 데이터는 `제8조(연차휴가 신청)`과 `제8조의2(긴급휴가)`를 기준 조항으로 사용합니다. main 파일의 `제8조` 청크에는 `3일 전` 문구가 있고, modified 파일의 동일 위치에는 `5일 전` 문구가 있습니다.
+
 ## Git 제외 대상
 
 `.env`, 회사 문서 파일, SQLite DB, 벡터 DB, 업로드 파일, 로그 파일은 Git에 커밋하지 않습니다. 빈 디렉터리 유지를 위해 `.gitkeep` 파일만 추적합니다.

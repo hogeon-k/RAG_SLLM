@@ -17,6 +17,7 @@ htmlcov/
 data/uploads/*
 data/vector_db/*
 data/database/*
+data/test_workbooks/*
 *.db
 *.sqlite
 *.sqlite3
@@ -39,4 +40,5 @@ dist/
 !data/uploads/.gitkeep
 !data/vector_db/.gitkeep
 !data/database/.gitkeep
+!data/test_workbooks/.gitkeep
 !logs/.gitkeep
