@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from app.config.settings import Settings
-from app.models.document import AnswerResponse, SearchResponse, SearchResult, VerifiedSource
+from app.models.document import AnswerResponse, HistorySource, QuestionHistory, SearchResponse, SearchResult, VerifiedSource
 from app.repositories.history_repository import HistoryRepository
 from app.services.exceptions import AnswerGenerationError, DocumentRegistrationError
 from app.services.history_service import HistoryService
@@ -113,6 +113,16 @@ def test_history_repository_lists_filters_and_paginates(tmp_path) -> None:
     assert escaped.total_count == 0
 
 
+def test_history_date_filter_and_missing_detail(tmp_path) -> None:
+    service = HistoryService(_settings(tmp_path))
+    saved = service.save_answer(_answer("annual leave"))
+
+    assert service.list_histories(start_date=saved.created_at.date(), end_date=saved.created_at.date()).total_count == 1
+    assert service.list_histories(start_date=saved.created_at.date().replace(year=2030)).total_count == 0
+    with pytest.raises(DocumentRegistrationError):
+        service.get_history("missing")
+
+
 def test_history_delete_does_not_remove_documents_or_chunks(tmp_path) -> None:
     settings = _settings(tmp_path)
     service = HistoryService(settings)
@@ -121,6 +131,54 @@ def test_history_delete_does_not_remove_documents_or_chunks(tmp_path) -> None:
 
     assert repository.count() == 1
     assert service.delete_history(saved.history_id)
+    assert repository.count() == 0
+
+
+def test_history_repository_rolls_back_when_source_insert_fails(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    repository = HistoryRepository(settings.database_path)
+    now = datetime(2026, 1, 1, 10, 0, 0)
+    duplicate_source = HistorySource(
+        history_source_id="HSRC-1",
+        history_id="HIST-1",
+        evidence_id="E1",
+        chunk_id="CHUNK-1",
+        document_id="DOC-1",
+        sheet_id=None,
+        source_rank=1,
+        document_display_name="rules.xlsx",
+        sheet_name="Leave",
+        article="Article 8",
+        title="Annual leave",
+        cell_range="A1:B2",
+        cell_refs=("A1", "B2"),
+        content="content",
+        created_at=now,
+    )
+    history = QuestionHistory(
+        history_id="HIST-1",
+        request_id="REQ-1",
+        question="question",
+        answer="answer",
+        status="SUCCESS",
+        insufficient_evidence=False,
+        error_code=None,
+        error_message=None,
+        search_mode="hybrid",
+        requested_top_k=3,
+        retrieved_count=1,
+        used_evidence_count=2,
+        ollama_model="fake-model",
+        total_duration_ms=1,
+        retrieval_duration_ms=1,
+        generation_duration_ms=0,
+        created_at=now,
+        sources=(duplicate_source, duplicate_source),
+    )
+
+    with pytest.raises(Exception):
+        repository.save(history)
+
     assert repository.count() == 0
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from app.services.exceptions import DocumentRegistrationError
@@ -42,8 +44,32 @@ class HistoryViewModel(QObject):
         self._thread: QThread | None = None
         self._worker: HistoryWorker | None = None
 
-    def load_histories(self, search_text: str = "", status: str = "", limit: int = 50, offset: int = 0) -> bool:
-        return self._start(self._service.list_histories, search_text or None, status or None, None, None, limit, offset, self.list_succeeded)
+    def load_histories(
+        self,
+        search_text: str = "",
+        status: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> bool:
+        try:
+            parsed_start = _parse_date(start_date)
+            parsed_end = _parse_date(end_date)
+        except ValueError:
+            self.operation_failed.emit("Dates must use YYYY-MM-DD.")
+            self.operation_finished.emit()
+            return True
+        return self._start(
+            self._service.list_histories,
+            search_text or None,
+            status or None,
+            parsed_start,
+            parsed_end,
+            limit,
+            offset,
+            self.list_succeeded,
+        )
 
     def load_detail(self, history_id: str) -> bool:
         return self._start(self._service.get_history, history_id, self.detail_succeeded)
@@ -81,3 +107,8 @@ class HistoryViewModel(QObject):
         self._thread = None
         self._worker = None
         self.operation_finished.emit()
+
+
+def _parse_date(value: str) -> date | None:
+    cleaned = value.strip()
+    return date.fromisoformat(cleaned) if cleaned else None

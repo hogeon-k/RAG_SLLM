@@ -45,7 +45,12 @@ class HistoryView(QWidget):
         self.search_edit.setPlaceholderText("Search question, answer, document, sheet, article, title")
         self.status_combo = QComboBox()
         self.status_combo.addItems(("", "SUCCESS", "INSUFFICIENT_EVIDENCE", "NO_EVIDENCE", "FAILED"))
+        self.start_date_edit = QLineEdit()
+        self.start_date_edit.setPlaceholderText("Start YYYY-MM-DD")
+        self.end_date_edit = QLineEdit()
+        self.end_date_edit.setPlaceholderText("End YYYY-MM-DD")
         self.refresh_button = QPushButton("Refresh")
+        self.reset_button = QPushButton("Reset")
         self.delete_button = QPushButton("Delete Selected")
         self.delete_all_button = QPushButton("Delete All")
         self.status_label = QLabel("")
@@ -54,7 +59,10 @@ class HistoryView(QWidget):
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(self.search_edit, 1)
         filter_layout.addWidget(self.status_combo)
+        filter_layout.addWidget(self.start_date_edit)
+        filter_layout.addWidget(self.end_date_edit)
         filter_layout.addWidget(self.refresh_button)
+        filter_layout.addWidget(self.reset_button)
         filter_layout.addWidget(self.delete_button)
         filter_layout.addWidget(self.delete_all_button)
 
@@ -78,7 +86,10 @@ class HistoryView(QWidget):
 
         self.refresh_button.clicked.connect(self._load)
         self.search_edit.returnPressed.connect(self._load)
+        self.start_date_edit.returnPressed.connect(self._load)
+        self.end_date_edit.returnPressed.connect(self._load)
         self.status_combo.currentIndexChanged.connect(self._load)
+        self.reset_button.clicked.connect(self._reset_filters)
         self.table.itemSelectionChanged.connect(self._load_selected_detail)
         self.delete_button.clicked.connect(self._delete_selected)
         self.delete_all_button.clicked.connect(self._delete_all)
@@ -93,8 +104,20 @@ class HistoryView(QWidget):
         self.delete_all_button.setEnabled(False)
 
     def _load(self) -> None:
-        if not self._view_model.load_histories(self.search_edit.text().strip(), self.status_combo.currentText()):
+        if not self._view_model.load_histories(
+            self.search_edit.text().strip(),
+            self.status_combo.currentText(),
+            self.start_date_edit.text().strip(),
+            self.end_date_edit.text().strip(),
+        ):
             self.status_label.setText("History operation is already running.")
+
+    def _reset_filters(self) -> None:
+        self.search_edit.clear()
+        self.start_date_edit.clear()
+        self.end_date_edit.clear()
+        self.status_combo.setCurrentIndex(0)
+        self._load()
 
     def _load_selected_detail(self) -> None:
         row = self.table.currentRow()
@@ -123,12 +146,14 @@ class HistoryView(QWidget):
 
     def _on_started(self) -> None:
         self.refresh_button.setEnabled(False)
+        self.reset_button.setEnabled(False)
         self.delete_button.setEnabled(False)
         self.delete_all_button.setEnabled(False)
         self.status_label.setText("Working...")
 
     def _on_finished(self) -> None:
         self.refresh_button.setEnabled(True)
+        self.reset_button.setEnabled(True)
         self.delete_button.setEnabled(self._selected_id is not None)
         self.delete_all_button.setEnabled(bool(self._histories))
 

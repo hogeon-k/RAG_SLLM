@@ -4,6 +4,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from app.config.settings import Settings
 from app.repositories.database_repository import DatabaseRepository
+from app.services.embedding_service import EmbeddingService
 from app.services.ollama_client import OllamaClient
 
 
@@ -24,8 +25,14 @@ class SettingsStatusWorker(QObject):
             self.succeeded.emit(
                 {
                     "sqlite_ok": self._database.health_check(),
+                    "chroma_ready": self._settings.vector_db_dir.exists(),
                     "server_available": ollama_status.server_available,
                     "model_available": ollama_status.model_available,
+                    "embedding_status": EmbeddingService(
+                        self._settings.embedding_model,
+                        self._settings.embedding_device,
+                        self._settings.embedding_batch_size,
+                    ).get_status(),
                     "message": ollama_status.message,
                 }
             )

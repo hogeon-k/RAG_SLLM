@@ -31,9 +31,9 @@ class SettingsView(QWidget):
         text = (
             "System settings\n\n"
             f"environment: {settings.app_env}\n"
-            f"data_dir: {settings.data_dir}\n"
-            f"sqlite: {settings.database_path}\n"
-            f"vector_db: {settings.vector_db_dir}\n"
+            "data_dir: configured\n"
+            "sqlite: configured\n"
+            "vector_db: configured\n"
             f"ollama_host: {settings.ollama_host}\n"
             f"ollama_model: {settings.ollama_model}\n"
             f"retrieval_top_k: {settings.retrieval_top_k}\n"
@@ -79,8 +79,10 @@ class SettingsView(QWidget):
             "\n".join(
                 (
                     f"sqlite_ok={status.get('sqlite_ok')}",
+                    f"chroma_ready={status.get('chroma_ready')}",
                     f"server_available={status.get('server_available')}",
                     f"model_available={status.get('model_available')}",
+                    f"embedding_device={_embedding_device_label(status)}",
                     f"message={status.get('message')}",
                 )
             )
@@ -91,3 +93,10 @@ class SettingsView(QWidget):
 
     def _on_status_finished(self) -> None:
         self.status_button.setEnabled(True)
+
+
+def _embedding_device_label(status: dict) -> str:
+    embedding_status = status.get("embedding_status")
+    if not isinstance(embedding_status, dict):
+        return "unknown"
+    return str(embedding_status.get("resolved_device") or embedding_status.get("configured_device") or "unknown")
