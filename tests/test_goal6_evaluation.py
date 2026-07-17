@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+import argparse
+import json
+
+from scripts.run_goal6_evaluation import generate_goal6_fixtures, run_evaluation, validate_manifest
+
+
+def test_goal6_fixture_manifest_schema(tmp_path) -> None:
+    manifest_path = generate_goal6_fixtures(tmp_path / "fixtures")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    validate_manifest(manifest)
+    assert len(manifest["documents"]) >= 3
+    assert len(manifest["questions"]) >= 30
+    assert {question["split"] for question in manifest["questions"]} >= {"dev", "test"}
+    assert sum(1 for question in manifest["questions"] if not question["answerable"]) >= 6
+
+
+def test_goal6_retrieval_evaluation_creates_reports(tmp_path) -> None:
+    args = argparse.Namespace(
+        mode="retrieval-only",
+        split="dev",
+        search_mode="hybrid",
+        fixture_dir=tmp_path / "fixtures",
+        output_dir=tmp_path / "reports",
+        limit=4,
+        question_id=None,
+        fail_on_threshold=False,
+    )
+
+    result = run_evaluation(args)
+
+    assert result["question_count"] == 4
+    assert result["chunk_count"] > 0
+    assert result["fts_count"] == result["chunk_count"]
+    assert result["vector_count"] == result["chunk_count"]
+    assert "recall_at_5" in result["retrieval"]["hybrid"]
+    assert list((tmp_path / "reports").glob("*.json"))
+    assert list((tmp_path / "reports").glob("*.md"))
+
+
+def test_goal6_fake_answer_evaluation_is_deterministic(tmp_path) -> None:
+    args = argparse.Namespace(
+        mode="fake-answer",
+        split="dev",
+        search_mode="hybrid",
+        fixture_dir=tmp_path / "fixtures",
+        output_dir=tmp_path / "reports",
+        limit=6,
+        question_id=None,
+        fail_on_threshold=False,
+    )
+
+    result = run_evaluation(args)
+
+    assert result["answer"]["json_parse_success_rate"] == 1.0
+    assert result["answer"]["schema_success_rate"] == 1.0
+    assert result["answer"]["ollama_calls_when_no_results"] == 0
+
+
+def test_goal6_question_id_filter(tmp_path) -> None:
+    args = argparse.Namespace(
+        mode="retrieval-only",
+        split="all",
+        search_mode="keyword",
+        fixture_dir=tmp_path / "fixtures",
+        output_dir=tmp_path / "reports",
+        limit=None,
+        question_id="Q001",
+        fail_on_threshold=False,
+    )
+
+    result = run_evaluation(args)
+
+    assert result["question_count"] == 1
