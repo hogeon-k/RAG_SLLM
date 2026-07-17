@@ -106,6 +106,38 @@ def initialize_database(database_path: Path) -> None:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id ON document_chunks(document_id)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_document_chunks_sheet_index ON document_chunks(sheet_id, chunk_index)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_document_chunks_content_hash ON document_chunks(content_hash)")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS document_search_indexes (
+                document_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                embedding_model TEXT NULL,
+                model_fingerprint TEXT NULL,
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                fts_count INTEGER NOT NULL DEFAULT 0,
+                vector_count INTEGER NOT NULL DEFAULT 0,
+                indexed_at TEXT NULL,
+                index_error TEXT NULL,
+                content_fingerprint TEXT NULL,
+                FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS chunk_search_fts USING fts5(
+                chunk_id UNINDEXED,
+                document_id UNINDEXED,
+                original_name,
+                sheet_name,
+                section,
+                article,
+                title,
+                content,
+                tokenize='trigram'
+            )
+            """
+        )
 
 
 def _add_column_if_missing(connection, table_name: str, column_name: str, column_definition: str) -> None:

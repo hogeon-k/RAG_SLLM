@@ -160,6 +160,7 @@ class DocumentView(QWidget):
         super().__init__()
         self._view_model = view_model
         self._documents: list[Document] = []
+        self._is_busy = False
 
         self.title = QLabel("문서 관리")
         self.title.setObjectName("page_title")
@@ -170,6 +171,8 @@ class DocumentView(QWidget):
         self.extract_button = QPushButton("내용 추출")
         self.preview_button = QPushButton("추출 결과 보기")
         self.reextract_button = QPushButton("재추출")
+        self.index_button = QPushButton("검색 인덱싱")
+        self.reindex_button = QPushButton("재인덱싱")
         self.refresh_button = QPushButton("새로고침")
         self.status_label = QLabel("")
         self.status_label.setObjectName("status_label")
@@ -180,6 +183,8 @@ class DocumentView(QWidget):
             self.extract_button,
             self.preview_button,
             self.reextract_button,
+            self.index_button,
+            self.reindex_button,
             self.refresh_button,
         ):
             button_layout.addWidget(button)
@@ -208,6 +213,8 @@ class DocumentView(QWidget):
         self.extract_button.clicked.connect(self._extract_selected_document)
         self.reextract_button.clicked.connect(self._extract_selected_document)
         self.preview_button.clicked.connect(self._preview_selected_document)
+        self.index_button.clicked.connect(self._index_selected_document)
+        self.reindex_button.clicked.connect(self._reindex_selected_document)
         self.refresh_button.clicked.connect(self._view_model.load_documents)
         self.table.itemSelectionChanged.connect(self._update_action_buttons)
         self._view_model.documents_changed.connect(self._render_documents)
@@ -220,6 +227,10 @@ class DocumentView(QWidget):
         self._view_model.extraction_succeeded.connect(self._on_extraction_succeeded)
         self._view_model.extraction_failed.connect(self._on_extraction_failed)
         self._view_model.extraction_finished.connect(self._on_extraction_finished)
+        self._view_model.indexing_started.connect(self._on_indexing_started)
+        self._view_model.indexing_succeeded.connect(self._on_indexing_succeeded)
+        self._view_model.indexing_failed.connect(self._on_indexing_failed)
+        self._view_model.indexing_finished.connect(self._on_indexing_finished)
 
         self._view_model.load_documents()
         self._update_action_buttons()
@@ -251,6 +262,7 @@ class DocumentView(QWidget):
             QMessageBox.information(self, "등록 진행 중", "이미 문서 등록이 진행 중입니다.")
 
     def _render_documents(self, documents: list[Document]) -> None:
+        selected_document_id = self._selected_document().id if self._selected_document() else None
         self._documents = documents
         self.table.setRowCount(len(documents))
         for row, document in enumerate(documents):
@@ -277,6 +289,11 @@ class DocumentView(QWidget):
         has_documents = bool(documents)
         self.table.setVisible(has_documents)
         self.empty_label.setVisible(not has_documents)
+        if selected_document_id:
+            for row, document in enumerate(documents):
+                if document.id == selected_document_id:
+                    self.table.selectRow(row)
+                    break
         self._update_action_buttons()
 
     def _selected_document(self) -> Document | None:
@@ -302,20 +319,41 @@ class DocumentView(QWidget):
         dialog = ExtractionPreviewDialog(document, chunks, self)
         dialog.exec()
 
+    def _index_selected_document(self) -> None:
+        document = self._selected_document()
+        if document is None:
+            QMessageBox.information(self, "문서 선택", "먼저 문서를 선택해 주세요.")
+            return
+        if not self._view_model.index_document(document.id):
+            QMessageBox.information(self, "인덱싱 진행 중", "이미 검색 인덱싱이 진행 중입니다.")
+
+    def _reindex_selected_document(self) -> None:
+        document = self._selected_document()
+        if document is None:
+            QMessageBox.information(self, "문서 선택", "먼저 문서를 선택해 주세요.")
+            return
+        if not self._view_model.index_document(document.id, force=True):
+            QMessageBox.information(self, "인덱싱 진행 중", "이미 검색 인덱싱이 진행 중입니다.")
+
     def _update_action_buttons(self) -> None:
         document = self._selected_document()
         has_document = document is not None
         status = document.status if document else ""
-        busy = status == "PARSING"
+        busy = self._is_busy or status in {"PARSING", "INDEXING"}
         self.extract_button.setEnabled(has_document and status in {"UPLOADED", "FAILED"} and not busy)
         self.reextract_button.setEnabled(has_document and status in {"PARSED", "FAILED"} and not busy)
-        self.preview_button.setEnabled(has_document and status == "PARSED" and not busy)
+        self.preview_button.setEnabled(has_document and status in {"PARSED", "COMPLETED"} and not busy)
+        self.index_button.setEnabled(has_document and status == "PARSED" and not busy)
+        self.reindex_button.setEnabled(has_document and status == "COMPLETED" and not busy)
 
     def _set_busy(self, is_busy: bool) -> None:
+        self._is_busy = is_busy
         self.register_button.setEnabled(not is_busy)
         self.extract_button.setEnabled(not is_busy)
         self.reextract_button.setEnabled(not is_busy)
         self.preview_button.setEnabled(not is_busy)
+        self.index_button.setEnabled(not is_busy)
+        self.reindex_button.setEnabled(not is_busy)
         self.refresh_button.setEnabled(not is_busy)
 
     def _on_registration_started(self) -> None:
@@ -364,6 +402,30 @@ class DocumentView(QWidget):
         self._set_busy(False)
         self._update_action_buttons()
 
+    def _on_indexing_started(self) -> None:
+        self._set_busy(True)
+        self.status_label.setText("검색 인덱스를 생성하는 중입니다.")
+
+    def _on_indexing_succeeded(self, result) -> None:
+        self.status_label.setText("검색 인덱싱 완료")
+        QMessageBox.information(
+            self,
+            "검색 인덱싱 완료",
+            "검색 인덱싱이 완료되었습니다.\n"
+            f"FTS 청크: {result.fts_count}\n"
+            f"벡터 청크: {result.vector_count}\n"
+            f"모델: {result.embedding_model}",
+        )
+
+    def _on_indexing_failed(self, message: str) -> None:
+        self.status_label.setText("검색 인덱싱 실패")
+        QMessageBox.warning(self, "검색 인덱싱 실패", message)
+
+    def _on_indexing_finished(self) -> None:
+        self._set_busy(False)
+        self._view_model.load_documents()
+        self._update_action_buttons()
+
 
 def _clean_text(value: str) -> str | None:
     cleaned = value.strip()
@@ -385,6 +447,8 @@ def _display_status(status: str) -> str:
         "UPLOADED": "등록 완료",
         "PARSING": "추출 중",
         "PARSED": "추출 완료",
+        "INDEXING": "인덱싱 중",
+        "COMPLETED": "검색 가능",
         "FAILED": "추출 실패",
     }
     return labels.get(status, status)

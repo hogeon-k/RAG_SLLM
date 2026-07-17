@@ -107,3 +107,90 @@ class ExtractionResult:
     status: str
     elapsed_time_ms: int
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    chunk_id: str
+    document_id: str
+    original_name: str
+    version: str | None
+    sheet_name: str
+    section: str | None
+    article: str | None
+    title: str | None
+    content: str
+    cell_range: str
+    cell_refs: tuple[str, ...]
+    keyword_score: float | None
+    vector_score: float | None
+    final_score: float
+    matched_by: tuple[str, ...]
+    rank: int
+
+
+@dataclass(frozen=True)
+class SearchResponse:
+    query: str
+    mode: str
+    results: list[SearchResult]
+    requested_top_k: int
+    elapsed_time_ms: int
+    keyword_candidate_count: int
+    vector_candidate_count: int
+    searched_document_ids: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Evidence:
+    evidence_id: str
+    chunk_id: str
+    document_id: str
+    rank: int
+    retrieval_score: float
+    article: str | None
+    title: str | None
+    content: str
+
+
+@dataclass(frozen=True)
+class VerifiedSource:
+    evidence_id: str
+    chunk_id: str
+    document_id: str
+    original_name: str
+    sheet_name: str
+    article: str | None
+    title: str | None
+    cell_range: str
+    cell_refs: tuple[str, ...]
+    content: str
+    used: bool
+
+
+@dataclass(frozen=True)
+class AnswerResponse:
+    question: str
+    answer: str
+    insufficient_evidence: bool
+    reason: str
+    used_evidence: list[Evidence]
+    verified_sources: list[VerifiedSource]
+    retrieval: SearchResponse
+    generation_succeeded: bool
+    elapsed_time_ms: int
+    error_code: str | None = None
+    action_items: tuple[str, ...] = ()
+    exceptions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class IndexingResult:
+    document_id: str
+    fts_count: int
+    vector_count: int
+    embedding_model: str
+    status: str
+    elapsed_time_ms: int
+    warnings: tuple[str, ...] = ()

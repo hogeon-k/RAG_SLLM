@@ -116,6 +116,14 @@ class ExtractionRepository:
                 "UPDATE documents SET status = ?, parsed_at = ?, parse_error = NULL WHERE id = ?",
                 ("PARSED", parsed_at.isoformat(timespec="seconds"), document_id),
             )
+            connection.execute(
+                """
+                UPDATE document_search_indexes
+                SET status = 'STALE', index_error = NULL
+                WHERE document_id = ?
+                """,
+                (document_id,),
+            )
 
     def list_sheets(self, document_id: str) -> list[ParsedSheet]:
         with open_connection(self._database_path) as connection:
@@ -151,6 +159,21 @@ class ExtractionRepository:
         with open_connection(self._database_path) as connection:
             row = connection.execute("SELECT * FROM document_chunks WHERE id = ?", (chunk_id,)).fetchone()
         return _row_to_chunk(row) if row else None
+
+    def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[DocumentChunk]:
+        if not chunk_ids:
+            return []
+        placeholders = ",".join("?" for _ in chunk_ids)
+        with open_connection(self._database_path) as connection:
+            rows = connection.execute(
+                f"SELECT * FROM document_chunks WHERE id IN ({placeholders})",
+                tuple(chunk_ids),
+            ).fetchall()
+        chunks = {}
+        for row in rows:
+            chunk = _row_to_chunk(row)
+            chunks[chunk.id] = chunk
+        return [chunks[chunk_id] for chunk_id in chunk_ids if chunk_id in chunks]
 
     def count_chunks(self, document_id: str) -> int:
         return self._count("document_chunks", document_id)

@@ -12,9 +12,12 @@ from PySide6.QtWidgets import (
 
 from app.config.settings import Settings
 from app.repositories.database_repository import DatabaseRepository
+from app.services.answer_service import AnswerService
 from app.services.document_extraction_service import DocumentExtractionService
 from app.services.document_service import DocumentService
 from app.services.question_service import QuestionService
+from app.services.retrieval_service import RetrievalService
+from app.services.search_index_service import SearchIndexService
 from app.viewmodels.document_viewmodel import DocumentViewModel
 from app.viewmodels.question_viewmodel import QuestionViewModel
 from app.views.document_view import DocumentView
@@ -32,9 +35,12 @@ class MainWindow(QMainWindow):
         self.resize(1200, 760)
 
         database_repository = DatabaseRepository(settings.database_path)
-        question_service = QuestionService(database_repository)
+        retrieval_service = RetrievalService(settings)
+        answer_service = AnswerService(settings, retrieval_service)
+        question_service = QuestionService(database_repository, retrieval_service, answer_service)
         document_service = DocumentService(settings)
         extraction_service = DocumentExtractionService(settings)
+        search_index_service = SearchIndexService(settings)
 
         self.sidebar = QListWidget()
         self.sidebar.setObjectName("sidebar")
@@ -49,7 +55,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setObjectName("content_stack")
         self.stack.addWidget(QuestionView(QuestionViewModel(question_service)))
-        self.stack.addWidget(DocumentView(DocumentViewModel(document_service, extraction_service)))
+        self.stack.addWidget(DocumentView(DocumentViewModel(document_service, extraction_service, search_index_service)))
         self.stack.addWidget(HistoryView())
         self.stack.addWidget(SettingsView(settings))
 

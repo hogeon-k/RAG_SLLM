@@ -23,3 +23,17 @@ class DocumentStorageError(DocumentRegistrationError):
 
 class DocumentExtractionError(DocumentRegistrationError):
     pass
+
+
+class SearchIndexError(DocumentRegistrationError):
+    pass
+
+
+class RetrievalError(DocumentRegistrationError):
+    pass
+
+
+class AnswerGenerationError(DocumentRegistrationError):
+    def __init__(self, code: str, user_message: str) -> None:
+        super().__init__(user_message)
+        self.code = code

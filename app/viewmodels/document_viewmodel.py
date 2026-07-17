@@ -9,6 +9,7 @@ from app.models.document import Document
 from app.services.document_extraction_service import DocumentExtractionService
 from app.services.document_service import DocumentService
 from app.services.exceptions import DocumentExtractionError, DocumentRegistrationError
+from app.services.search_index_service import SearchIndexService
 
 
 class DocumentWorker(QObject):
@@ -79,6 +80,30 @@ class DocumentExtractionWorker(QObject):
             self.finished.emit()
 
 
+class SearchIndexWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, service: SearchIndexService, document_id: str, force: bool = False) -> None:
+        super().__init__()
+        self._service = service
+        self._document_id = document_id
+        self._force = force
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self._service.index_document(self._document_id, force=self._force)
+            self.succeeded.emit(result)
+        except DocumentRegistrationError as exc:
+            self.failed.emit(exc.user_message)
+        except Exception:
+            self.failed.emit("검색 인덱스를 생성하는 중 예상하지 못한 오류가 발생했습니다.")
+        finally:
+            self.finished.emit()
+
+
 class DocumentViewModel(QObject):
     documents_changed = Signal(list)
     registration_started = Signal()
@@ -90,15 +115,27 @@ class DocumentViewModel(QObject):
     extraction_succeeded = Signal(object)
     extraction_failed = Signal(str)
     extraction_finished = Signal()
+    indexing_started = Signal()
+    indexing_succeeded = Signal(object)
+    indexing_failed = Signal(str)
+    indexing_finished = Signal()
 
-    def __init__(self, service: DocumentService, extraction_service: DocumentExtractionService | None = None) -> None:
+    def __init__(
+        self,
+        service: DocumentService,
+        extraction_service: DocumentExtractionService | None = None,
+        search_index_service: SearchIndexService | None = None,
+    ) -> None:
         super().__init__()
         self._service = service
         self._extraction_service = extraction_service
+        self._search_index_service = search_index_service
         self._thread: QThread | None = None
         self._worker: DocumentWorker | None = None
         self._extraction_thread: QThread | None = None
         self._extraction_worker: DocumentExtractionWorker | None = None
+        self._indexing_thread: QThread | None = None
+        self._indexing_worker: SearchIndexWorker | None = None
 
     def description(self) -> str:
         return self._service.status_message()
@@ -161,6 +198,25 @@ class DocumentViewModel(QObject):
         self._extraction_thread.start()
         return True
 
+    def index_document(self, document_id: str, force: bool = False) -> bool:
+        if self._search_index_service is None or self._indexing_thread is not None:
+            return False
+
+        self._indexing_thread = QThread()
+        self._indexing_worker = SearchIndexWorker(self._search_index_service, document_id, force)
+        self._indexing_worker.moveToThread(self._indexing_thread)
+        self._indexing_thread.started.connect(self._indexing_worker.run)
+        self._indexing_worker.succeeded.connect(self._handle_indexing_success)
+        self._indexing_worker.failed.connect(self.indexing_failed)
+        self._indexing_worker.finished.connect(self._indexing_thread.quit)
+        self._indexing_worker.finished.connect(self._indexing_worker.deleteLater)
+        self._indexing_thread.finished.connect(self._indexing_thread.deleteLater)
+        self._indexing_thread.finished.connect(self._clear_indexing_worker)
+
+        self.indexing_started.emit()
+        self._indexing_thread.start()
+        return True
+
     def load_chunks(self, document_id: str):
         if self._extraction_service is None:
             return []
@@ -186,6 +242,11 @@ class DocumentViewModel(QObject):
         self.extraction_succeeded.emit(result)
         self.load_documents()
 
+    @Slot(object)
+    def _handle_indexing_success(self, result) -> None:
+        self.indexing_succeeded.emit(result)
+        self.load_documents()
+
     @Slot()
     def _clear_worker(self) -> None:
         self._thread = None
@@ -197,3 +258,9 @@ class DocumentViewModel(QObject):
         self._extraction_thread = None
         self._extraction_worker = None
         self.extraction_finished.emit()
+
+    @Slot()
+    def _clear_indexing_worker(self) -> None:
+        self._indexing_thread = None
+        self._indexing_worker = None
+        self.indexing_finished.emit()
