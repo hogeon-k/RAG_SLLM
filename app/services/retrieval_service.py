@@ -181,10 +181,14 @@ def _article_boost(query: str, chunk) -> float:
 
 
 def _rank_fusion_boost(chunk_id: str, keyword_ranks: dict[str, int], vector_ranks: dict[str, int]) -> float:
+    in_keyword = chunk_id in keyword_ranks
+    in_vector = chunk_id in vector_ranks
+    if not in_keyword and in_vector:
+        return 0.0
     score = 0.0
-    if chunk_id in keyword_ranks:
+    if in_keyword:
         score += 1.0 / (60 + keyword_ranks[chunk_id])
-    if chunk_id in vector_ranks:
+    if in_vector:
         score += 1.0 / (60 + vector_ranks[chunk_id])
     return score * 2.5
 
@@ -247,11 +251,19 @@ def _expand_query(query: str) -> str:
 def _query_terms(text: str) -> list[str]:
     terms: list[str] = []
     for raw in re.findall(r"[0-9A-Za-z가-힣]+", text.lower()):
-        if len(raw) < 2 or raw in _SEARCH_STOPWORDS:
+        term = _normalize_query_term(raw)
+        if len(term) < 2 or term in _SEARCH_STOPWORDS:
             continue
-        if raw not in terms:
-            terms.append(raw)
+        if term not in terms:
+            terms.append(term)
     return terms
+
+
+def _normalize_query_term(term: str) -> str:
+    for suffix in ("인가요", "하나요", "가능한가요", "에서는", "에서", "으로", "에게", "까지", "부터", "에는", "은", "는", "이", "가", "을", "를", "와", "과", "의"):
+        if len(term) > len(suffix) + 1 and term.endswith(suffix):
+            return term[: -len(suffix)]
+    return term
 
 
 def _chunk_haystack(chunk) -> str:

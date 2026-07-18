@@ -14,8 +14,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.config.settings import Settings
-from app.repositories.document_repository import DocumentRepository
 from app.repositories.extraction_repository import ExtractionRepository
+from app.repositories.keyword_search_repository import KeywordSearchRepository
 from app.services.document_extraction_service import DocumentExtractionService
 from app.services.document_service import DocumentService
 from app.services.retrieval_service import RetrievalService
@@ -65,6 +65,9 @@ CASES = [
     {"query": "존재하지 않는 구내식당 주차 규정", "expected_sheet": None, "expected_article": None},
 ]
 
+ORIGINAL_GOAL3_CASE_COUNT = 7
+SEARCH_MODES = ("keyword", "vector", "hybrid")
+
 
 def evaluate() -> dict[str, object]:
     if not FIXTURE.exists():
@@ -84,49 +87,178 @@ def evaluate() -> dict[str, object]:
         shutil.copy2(FIXTURE, source)
         document = DocumentService(settings).register_document(source)
         DocumentExtractionService(settings).extract_document(document.id)
+        chunks = ExtractionRepository(settings.database_path).list_chunks(document.id)
         embedding = FakeEmbeddingService()
         vector = ChromaVectorRepository(settings.vector_db_dir, "goal3_eval", embedding.get_model_fingerprint())
-        SearchIndexService(settings, embedding_service=embedding, vector_repository=vector).index_document(document.id)
+        vector_count_before_index = vector.count_document(document.id)
+        index_result = SearchIndexService(settings, embedding_service=embedding, vector_repository=vector).index_document(document.id)
+        fts_count = KeywordSearchRepository(settings.database_path).count(document.id)
+        vector_count = vector.count_document(document.id)
+        vector_ids = vector._collection.get(where={"document_id": document.id}, include=[]).get("ids", [])
         retrieval = RetrievalService(settings, embedding_service=embedding, vector_repository=vector)
 
-        rows = []
-        hit_at_1 = hit_at_3 = hit_at_5 = 0
         started_all = time.perf_counter()
-        for case in CASES:
-            started = time.perf_counter()
-            response = retrieval.search(case["query"], mode="hybrid", top_k=5)
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            ranks = [
-                index + 1
-                for index, result in enumerate(response.results)
-                if _matches(result, case["expected_sheet"], case["expected_article"])
-            ]
-            rank = ranks[0] if ranks else None
-            hit_at_1 += 1 if rank and rank <= 1 else 0
-            hit_at_3 += 1 if rank and rank <= 3 else 0
-            hit_at_5 += 1 if rank and rank <= 5 else 0
-            top = response.results[0] if response.results else None
-            rows.append(
-                {
-                    "query": case["query"],
-                    "expected_sheet": case["expected_sheet"],
-                    "expected_article": case["expected_article"],
-                    "rank": rank,
-                    "top_sheet": top.sheet_name if top else None,
-                    "top_article": top.article if top else None,
-                    "top_cell_range": top.cell_range if top else None,
-                    "elapsed_ms": elapsed_ms,
-                }
-            )
-        total = len(CASES)
+        mode_results = {mode: _evaluate_mode(retrieval, mode) for mode in SEARCH_MODES}
+        hybrid_original = mode_results["hybrid"]["metrics"]["original7"]
+        legacy_hybrid = mode_results["hybrid"]["metrics"]["extended8_including_unanswerable"]
+        rows = _merge_case_rows(mode_results)
+        hit_at_1 = hybrid_original["hit_count_at_1"]
+        hit_at_3 = hybrid_original["hit_count_at_3"]
+        hit_at_5 = hybrid_original["hit_count_at_5"]
+        total = hybrid_original["denominator"]
+        legacy_total = legacy_hybrid["denominator"]
+        legacy_hit_at_5 = legacy_hybrid["hit_count_at_5"]
         return {
+            "question_sets": {
+                "original7": {
+                    "description": "Goal 3 original answerable questions.",
+                    "question_count": total,
+                },
+                "extended8": {
+                    "description": "Original 7 plus one unanswerable smoke probe.",
+                    "question_count": legacy_total,
+                    "unanswerable_count": legacy_total - total,
+                },
+            },
+            "index": {
+                "chunk_count": len(chunks),
+                "fts_count": fts_count,
+                "vector_count_before_index": vector_count_before_index,
+                "vector_count_after_index": vector_count,
+                "duplicate_vector_id_count": len(vector_ids) - len(set(vector_ids)),
+                "index_status": index_result.status,
+                "index_fts_count": index_result.fts_count,
+                "index_vector_count": index_result.vector_count,
+            },
+            "settings": {
+                "top_k": 5,
+                "embedding_model": settings.embedding_model,
+                "embedding_device": settings.embedding_device,
+                "keyword_candidate_k": settings.keyword_candidate_k,
+                "vector_candidate_k": settings.vector_candidate_k,
+                "keyword_weight": settings.keyword_weight,
+                "vector_weight": settings.vector_weight,
+            },
+            "metrics": {mode: result["metrics"] for mode, result in mode_results.items()},
             "cases": rows,
+            "legacy_0_875_trace": {
+                "meaning": "Old script divided seven original hits by all eight CASES, including the unanswerable probe.",
+                "search_mode": "hybrid",
+                "k": 5,
+                "numerator": legacy_hit_at_5,
+                "denominator": legacy_total,
+                "calculation": f"{legacy_hit_at_5} / {legacy_total} = {legacy_hit_at_5 / legacy_total:.3f}",
+                "failed_question_id": "G3-X01",
+            },
             "recall_at_1": hit_at_1 / total,
             "recall_at_3": hit_at_3 / total,
             "recall_at_5": hit_at_5 / total,
             "elapsed_ms": int((time.perf_counter() - started_all) * 1000),
             "note": "FakeEmbeddingService 기반 평가입니다. 실제 모델 성능 보장이 아닙니다.",
         }
+
+
+def _evaluate_mode(retrieval: RetrievalService, mode: str) -> dict[str, object]:
+    rows = []
+    for index, case in enumerate(CASES, 1):
+        question_id = f"G3-{index:02d}" if index <= ORIGINAL_GOAL3_CASE_COUNT else "G3-X01"
+        started = time.perf_counter()
+        response = retrieval.search(case["query"], mode=mode, top_k=5)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        ranks = [
+            rank + 1
+            for rank, result in enumerate(response.results)
+            if _matches(result, case["expected_sheet"], case["expected_article"])
+        ]
+        rank = ranks[0] if ranks else None
+        rows.append(
+            {
+                "question_id": question_id,
+                "question": case["query"],
+                "set": "original7" if index <= ORIGINAL_GOAL3_CASE_COUNT else "extended_unanswerable",
+                "expected_source": {
+                    "sheet": case["expected_sheet"],
+                    "article": case["expected_article"],
+                },
+                "rank": rank,
+                "hit_at_1": bool(rank and rank <= 1),
+                "hit_at_3": bool(rank and rank <= 3),
+                "hit_at_5": bool(rank and rank <= 5),
+                "top5": [_source_summary(result) for result in response.results[:5]],
+                "elapsed_ms": elapsed_ms,
+                "failure_reason": _failure_reason(case, rank),
+            }
+        )
+    return {
+        "metrics": {
+            "original7": _metrics(rows[:ORIGINAL_GOAL3_CASE_COUNT]),
+            "extended8_including_unanswerable": _metrics(rows),
+        },
+        "rows": rows,
+    }
+
+
+def _metrics(rows: list[dict[str, object]]) -> dict[str, object]:
+    denominator = len(rows)
+    hit_at_1 = sum(1 for row in rows if row["hit_at_1"])
+    hit_at_3 = sum(1 for row in rows if row["hit_at_3"])
+    hit_at_5 = sum(1 for row in rows if row["hit_at_5"])
+    return {
+        "denominator": denominator,
+        "hit_count_at_1": hit_at_1,
+        "hit_count_at_3": hit_at_3,
+        "hit_count_at_5": hit_at_5,
+        "recall_at_1": hit_at_1 / denominator,
+        "recall_at_3": hit_at_3 / denominator,
+        "recall_at_5": hit_at_5 / denominator,
+    }
+
+
+def _merge_case_rows(mode_results: dict[str, dict[str, object]]) -> list[dict[str, object]]:
+    rows = []
+    for index in range(len(CASES)):
+        keyword = mode_results["keyword"]["rows"][index]
+        vector = mode_results["vector"]["rows"][index]
+        hybrid = mode_results["hybrid"]["rows"][index]
+        rows.append(
+            {
+                "question_id": hybrid["question_id"],
+                "question": hybrid["question"],
+                "set": hybrid["set"],
+                "expected_source": hybrid["expected_source"],
+                "keyword_rank": keyword["rank"],
+                "vector_rank": vector["rank"],
+                "hybrid_rank": hybrid["rank"],
+                "keyword_hit": keyword["hit_at_5"],
+                "vector_hit": vector["hit_at_5"],
+                "hybrid_hit": hybrid["hit_at_5"],
+                "actual_top5": {
+                    "keyword": keyword["top5"],
+                    "vector": vector["top5"],
+                    "hybrid": hybrid["top5"],
+                },
+                "failure_reason": hybrid["failure_reason"],
+            }
+        )
+    return rows
+
+
+def _source_summary(result) -> dict[str, object]:
+    return {
+        "rank": result.rank,
+        "sheet": result.sheet_name,
+        "article": result.article,
+        "title": result.title,
+        "cell_range": result.cell_range,
+    }
+
+
+def _failure_reason(case: dict[str, object], rank: int | None) -> str | None:
+    if rank:
+        return None
+    if case["expected_sheet"] is None:
+        return "unanswerable_probe_not_part_of_original_goal3_recall"
+    return "expected_source_not_in_top5"
 
 
 def _matches(result, expected_sheet: str | None, expected_article: str | None) -> bool:
