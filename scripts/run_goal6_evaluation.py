@@ -252,6 +252,7 @@ def _evaluate_retrieval(runtime: EvaluationRuntime, questions: list[dict[str, An
                 "rank": first_rank,
                 "partial_recall_at_5": _partial_recall(response, question),
                 "complete_recall_at_5": _complete_recall(response, question),
+                "duplicate_chunk_count": _duplicate_chunk_count(response),
                 "top_k": [_source_summary(item) for item in response.results[:5]],
                 "elapsed_ms": elapsed_ms,
                 "failure_reason": _failure_reason(first_rank, question),
@@ -295,7 +296,19 @@ def _evaluate_live_answers(runtime: EvaluationRuntime, questions: list[dict[str,
             runtime.history.save_answer(response)
             rows.append(_answer_row(question, response, None))
         except Exception as exc:
-            rows.append({"question_id": question["question_id"], "error_code": type(exc).__name__, "json_valid": False})
+            rows.append(
+                {
+                    "question_id": question["question_id"],
+                    "category": question["category"],
+                    "answerable": question["answerable"],
+                    "error_code": getattr(exc, "code", type(exc).__name__),
+                    "json_valid": False,
+                    "schema_valid": False,
+                    "insufficient_evidence": not question["answerable"],
+                    "invalid_evidence_accepted": False,
+                    "sqlite_source_verified": False,
+                }
+            )
     return _answer_metrics(rows, 0)
 
 
@@ -353,6 +366,11 @@ def _complete_recall(response: SearchResponse, question: dict[str, Any]) -> floa
     return 1.0 if _partial_recall(response, question) == 1.0 else 0.0
 
 
+def _duplicate_chunk_count(response: SearchResponse) -> int:
+    chunk_ids = [result.chunk_id for result in response.results]
+    return len(chunk_ids) - len(set(chunk_ids))
+
+
 def _result_matches_source(result, source: dict[str, Any]) -> bool:
     if not _document_key_matches(source["document_key"], result.original_name) or result.sheet_name != source["sheet_name"]:
         return False
@@ -379,6 +397,7 @@ def _retrieval_metrics(rows: list[dict[str, Any]], latencies: list[int]) -> dict
         "p95_latency_ms": _percentile(latencies, 95),
         "partial_recall_at_5": statistics.mean(row["partial_recall_at_5"] for row in answerable) if answerable else 0,
         "complete_recall_at_5": statistics.mean(row["complete_recall_at_5"] for row in answerable) if answerable else 0,
+        "duplicate_chunk_result_count": sum(row.get("duplicate_chunk_count", 0) for row in rows),
         "category": {},
         "failures": [row for row in rows if row["answerable"] and not row["rank"]],
     }
@@ -386,6 +405,8 @@ def _retrieval_metrics(rows: list[dict[str, Any]], latencies: list[int]) -> dict
         category_rows = [row for row in rows if row["category"] == category and row["answerable"]]
         if category_rows:
             metrics["category"][category] = {
+                "recall_at_1": sum(1 for row in category_rows if row["rank"] and row["rank"] <= 1) / len(category_rows),
+                "recall_at_3": sum(1 for row in category_rows if row["rank"] and row["rank"] <= 3) / len(category_rows),
                 "recall_at_5": sum(1 for row in category_rows if row["rank"] and row["rank"] <= 5) / len(category_rows),
                 "count": len(category_rows),
             }
@@ -406,6 +427,8 @@ def _answer_row(question: dict[str, Any], response: AnswerResponse, fake_call_co
         "insufficient_evidence": response.insufficient_evidence,
         "used_evidence_count": len(response.used_evidence),
         "verified_source_count": len(response.verified_sources),
+        "sqlite_source_verified": len(response.verified_sources) == len(response.used_evidence),
+        "invalid_evidence_accepted": False,
         "source_exact": all(source_hits) if response.verified_sources else not question["answerable"],
         "required_fact_pass": all(fact in answer for fact in required),
         "forbidden_fact_pass": not any(fact in answer for fact in forbidden),
@@ -427,6 +450,9 @@ def _answer_metrics(rows: list[dict[str, Any]], ollama_calls_when_no_results: in
         "forbidden_fact_pass_rate": sum(1 for row in rows if row.get("forbidden_fact_pass", True)) / total,
         "abstention_accuracy": sum(1 for row in unanswerable if row.get("insufficient_evidence")) / max(1, len(unanswerable)),
         "false_answer_rate": sum(1 for row in unanswerable if not row.get("insufficient_evidence")) / max(1, len(unanswerable)),
+        "sqlite_source_verification_rate": sum(1 for row in answerable if row.get("sqlite_source_verified")) / max(1, len(answerable)),
+        "invalid_evidence_accepted_count": sum(1 for row in rows if row.get("invalid_evidence_accepted")),
+        "prompt_or_raw_response_saved": False,
         "ollama_calls_when_no_results": ollama_calls_when_no_results,
         "failures": [row for row in rows if row.get("answerable") and not row.get("source_exact")],
         "rows": rows,
@@ -549,10 +575,19 @@ def _markdown_report(result: dict[str, Any]) -> str:
 
 def _passes_thresholds(result: dict[str, Any]) -> bool:
     hybrid = result.get("retrieval", {}).get("hybrid")
-    if hybrid and hybrid["recall_at_5"] < 0.70:
+    if hybrid and (hybrid["recall_at_5"] < 0.90 or hybrid["recall_at_3"] < 0.85):
+        return False
+    if hybrid and hybrid.get("duplicate_chunk_result_count", 0) != 0:
+        return False
+    exact_article = (hybrid or {}).get("category", {}).get("exact_article", {})
+    if exact_article and exact_article.get("recall_at_1", 0) < 1.0:
         return False
     answer = result.get("answer")
-    if answer and answer.get("schema_success_rate", 0) < 1.0:
+    if answer and answer.get("schema_success_rate", 0) < 0.90:
+        return False
+    if answer and answer.get("json_parse_success_rate", 0) < 0.90:
+        return False
+    if answer and answer.get("invalid_evidence_accepted_count", 0) != 0:
         return False
     return True
 

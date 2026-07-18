@@ -15,7 +15,9 @@ from app.services.retrieval_service import RetrievalService
 
 
 SYSTEM_PROMPT = """You answer only from the supplied evidence.
-If the evidence is insufficient, return insufficient_evidence=true.
+If one or more supplied evidence items directly answer the question, answer from those items and cite their IDs.
+If the supplied evidence does not answer the question, return insufficient_evidence=true.
+You may translate English evidence into Korean.
 Do not invent file names, sheet names, cell ranges, paths, or sources.
 Return only JSON. Do not use Markdown fences.
 Only include evidence IDs that were supplied in used_evidence_ids.
@@ -73,13 +75,8 @@ class AnswerService:
         if not status.model_available:
             raise AnswerGenerationError("OLLAMA_MODEL_NOT_FOUND", "Configured Ollama model was not found.")
 
-        raw_response = self._ollama.generate_json(SYSTEM_PROMPT, build_user_prompt(cleaned, evidences))
-        payload = parse_llm_json(raw_response)
-        answer_text, insufficient, reason, used_ids, action_items, exceptions = validate_llm_payload(payload)
         evidence_by_id = {item.evidence_id: item for item in evidences}
-        invalid_ids = [item for item in used_ids if item not in evidence_by_id]
-        if invalid_ids:
-            raise AnswerGenerationError("INVALID_EVIDENCE_ID", "The model returned an unknown evidence ID.")
+        answer_text, insufficient, reason, used_ids, action_items, exceptions = self._generate_validated_payload(cleaned, evidences, evidence_by_id)
 
         unique_used_ids = _dedupe_preserve_order(used_ids)
         if not insufficient and not unique_used_ids:
@@ -103,6 +100,32 @@ class AnswerService:
             action_items=tuple(action_items),
             exceptions=tuple(exceptions),
         )
+
+    def _generate_validated_payload(
+        self,
+        question: str,
+        evidences: list[Evidence],
+        evidence_by_id: dict[str, Evidence],
+    ) -> tuple[str, bool, str, list[str], list[str], list[str]]:
+        prompt = build_user_prompt(question, evidences)
+        last_error: AnswerGenerationError | None = None
+        for attempt in range(2):
+            try:
+                raw_response = self._ollama.generate_json(SYSTEM_PROMPT, prompt)
+                payload = parse_llm_json(raw_response)
+                validated = validate_llm_payload(payload)
+                invalid_ids = [item for item in validated[3] if item not in evidence_by_id]
+                if invalid_ids:
+                    raise AnswerGenerationError("INVALID_EVIDENCE_ID", "The model returned an unknown evidence ID.")
+                return validated
+            except AnswerGenerationError as exc:
+                last_error = exc
+                if attempt == 1 or not _is_retryable_generation_error(exc):
+                    raise
+                prompt = build_retry_prompt(question, evidences, exc.code)
+        if last_error:
+            raise last_error
+        raise AnswerGenerationError("INVALID_RESPONSE_SCHEMA", "The model response schema is invalid.")
 
     def _verified_sources(self, evidences: list[Evidence]) -> list[VerifiedSource]:
         if not evidences:
@@ -173,8 +196,20 @@ def build_user_prompt(question: str, evidences: list[Evidence]) -> str:
         f"{question}\n\n"
         "Evidence:\n"
         f"{json.dumps(evidence_payload, ensure_ascii=False)}\n\n"
+        "Use only the evidence IDs listed above. If an evidence item contains the requested fact in English, translate it into Korean.\n"
         "Return JSON with this schema:\n"
         f"{json.dumps(schema, ensure_ascii=False)}"
+    )
+
+
+def build_retry_prompt(question: str, evidences: list[Evidence], error_code: str) -> str:
+    return (
+        build_user_prompt(question, evidences)
+        + "\n\n"
+        "The previous model output failed validation with this error code only:\n"
+        f"{error_code}\n"
+        "Regenerate one valid JSON object that exactly follows the schema. "
+        "Use only the supplied evidence IDs. Do not include Markdown, explanations, paths, or source labels."
     )
 
 
@@ -224,3 +259,12 @@ def _dedupe_preserve_order(values: list[str]) -> list[str]:
             seen.add(value)
             result.append(value)
     return result
+
+
+def _is_retryable_generation_error(exc: AnswerGenerationError) -> bool:
+    return exc.code in {
+        "OLLAMA_EMPTY_RESPONSE",
+        "INVALID_JSON",
+        "INVALID_RESPONSE_SCHEMA",
+        "INVALID_EVIDENCE_ID",
+    }

@@ -10,6 +10,28 @@ from app.config.settings import Settings
 from app.services.exceptions import AnswerGenerationError
 
 
+OLLAMA_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "answer",
+        "action_items",
+        "exceptions",
+        "insufficient_evidence",
+        "used_evidence_ids",
+        "reason",
+    ],
+    "properties": {
+        "answer": {"type": "string"},
+        "action_items": {"type": "array", "items": {"type": "string"}},
+        "exceptions": {"type": "array", "items": {"type": "string"}},
+        "insufficient_evidence": {"type": "boolean"},
+        "used_evidence_ids": {"type": "array", "items": {"type": "string"}},
+        "reason": {"type": "string"},
+    },
+}
+
+
 @dataclass(frozen=True)
 class OllamaModelStatus:
     server_available: bool
@@ -40,7 +62,7 @@ class OllamaClient:
             "system": system_prompt,
             "prompt": user_prompt,
             "stream": False,
-            "format": "json",
+            "format": OLLAMA_RESPONSE_SCHEMA,
             "options": {
                 "num_ctx": self._settings.ollama_num_ctx,
                 "num_predict": self._settings.ollama_num_predict,

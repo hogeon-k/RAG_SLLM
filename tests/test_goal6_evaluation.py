@@ -40,6 +40,27 @@ def test_goal6_retrieval_evaluation_creates_reports(tmp_path) -> None:
     assert list((tmp_path / "reports").glob("*.md"))
 
 
+def test_goal61_hybrid_retrieval_thresholds(tmp_path) -> None:
+    args = argparse.Namespace(
+        mode="retrieval-only",
+        split="test",
+        search_mode="hybrid",
+        fixture_dir=tmp_path / "fixtures",
+        output_dir=tmp_path / "reports",
+        limit=None,
+        question_id=None,
+        fail_on_threshold=True,
+    )
+
+    result = run_evaluation(args)
+    hybrid = result["retrieval"]["hybrid"]
+
+    assert hybrid["recall_at_3"] >= 0.85
+    assert hybrid["recall_at_5"] >= 0.90
+    assert hybrid["category"]["exact_article"]["recall_at_1"] == 1.0
+    assert hybrid["duplicate_chunk_result_count"] == 0
+
+
 def test_goal6_fake_answer_evaluation_is_deterministic(tmp_path) -> None:
     args = argparse.Namespace(
         mode="fake-answer",
@@ -56,6 +77,9 @@ def test_goal6_fake_answer_evaluation_is_deterministic(tmp_path) -> None:
 
     assert result["answer"]["json_parse_success_rate"] == 1.0
     assert result["answer"]["schema_success_rate"] == 1.0
+    assert result["answer"]["sqlite_source_verification_rate"] == 1.0
+    assert result["answer"]["invalid_evidence_accepted_count"] == 0
+    assert result["answer"]["prompt_or_raw_response_saved"] is False
     assert result["answer"]["ollama_calls_when_no_results"] == 0
 
 

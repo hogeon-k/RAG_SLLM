@@ -10,7 +10,7 @@ from app.models.document import Document, DocumentChunk, SearchResponse, SearchR
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.extraction_repository import ExtractionRepository
 from app.models.document import ParsedCell, ParsedSheet
-from app.services.answer_service import AnswerService, build_evidence, build_user_prompt, parse_llm_json
+from app.services.answer_service import AnswerService, build_evidence, build_retry_prompt, build_user_prompt, parse_llm_json
 from app.services.exceptions import AnswerGenerationError
 
 
@@ -25,8 +25,8 @@ class FakeRetrievalService:
 
 
 class FakeOllamaClient:
-    def __init__(self, response: str) -> None:
-        self.response = response
+    def __init__(self, response: str | list[str]) -> None:
+        self.responses = response if isinstance(response, list) else [response]
         self.prompts: list[tuple[str, str]] = []
         self.status = type("Status", (), {"server_available": True, "model_available": True})()
 
@@ -35,7 +35,8 @@ class FakeOllamaClient:
 
     def generate_json(self, system_prompt: str, user_prompt: str) -> str:
         self.prompts.append((system_prompt, user_prompt))
-        return self.response
+        index = min(len(self.prompts) - 1, len(self.responses) - 1)
+        return self.responses[index]
 
 
 def _settings(tmp_path) -> Settings:
@@ -169,11 +170,34 @@ def test_code_fenced_json_is_parsed() -> None:
     assert payload["answer"] == "ok"
 
 
+def test_retry_prompt_does_not_include_raw_response() -> None:
+    prompt = build_retry_prompt("question", build_evidence([_result()]), "INVALID_JSON")
+
+    assert "INVALID_JSON" in prompt
+    assert "{bad" not in prompt
+
+
 def test_malformed_json_is_rejected() -> None:
     with pytest.raises(AnswerGenerationError) as exc_info:
         parse_llm_json("{bad")
 
     assert exc_info.value.code == "INVALID_JSON"
+
+
+def test_answer_retries_once_for_malformed_json(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed(settings)
+    ollama = FakeOllamaClient([
+        "{bad",
+        json.dumps({"answer": "Use the rule.", "insufficient_evidence": False, "used_evidence_ids": ["E1"], "reason": ""}),
+    ])
+    service = AnswerService(settings, FakeRetrievalService(_search_response([_result()])), ollama_client=ollama)
+
+    response = service.answer("leave")
+
+    assert response.answer == "Use the rule."
+    assert len(ollama.prompts) == 2
+    assert "{bad" not in ollama.prompts[1][1]
 
 
 def test_unknown_evidence_id_is_rejected(tmp_path) -> None:
@@ -186,6 +210,22 @@ def test_unknown_evidence_id_is_rejected(tmp_path) -> None:
         service.answer("leave")
 
     assert exc_info.value.code == "INVALID_EVIDENCE_ID"
+    assert len(ollama.prompts) == 2
+
+
+def test_unknown_evidence_id_can_be_retried_with_valid_id(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed(settings)
+    ollama = FakeOllamaClient([
+        json.dumps({"answer": "Bad cite.", "insufficient_evidence": False, "used_evidence_ids": ["E9"], "reason": ""}),
+        json.dumps({"answer": "Use the rule.", "insufficient_evidence": False, "used_evidence_ids": ["E1", "E1"], "reason": ""}),
+    ])
+    service = AnswerService(settings, FakeRetrievalService(_search_response([_result()])), ollama_client=ollama)
+
+    response = service.answer("leave")
+
+    assert [item.evidence_id for item in response.used_evidence] == ["E1"]
+    assert len(ollama.prompts) == 2
 
 
 def test_no_evidence_does_not_call_ollama(tmp_path) -> None:
