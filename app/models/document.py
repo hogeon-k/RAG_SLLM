@@ -22,6 +22,13 @@ class Document:
     uploaded_at: datetime
     parsed_at: datetime | None = None
     parse_error: str | None = None
+    lifecycle_status: str = "CURRENT"
+    version_label: str | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    document_family: str | None = None
+    supersedes_document_id: str | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +38,21 @@ class DocumentRegistration:
     effective_date: date | None = None
     revised_date: date | None = None
     department: str | None = None
+
+
+@dataclass(frozen=True)
+class DocumentDeleteResult:
+    document_id: str
+    display_name: str
+    deleted_document_count: int
+    deleted_sheet_count: int
+    deleted_cell_count: int
+    deleted_chunk_count: int
+    deleted_fts_count: int
+    deleted_vector_count: int
+    internal_file_deleted: bool
+    history_preserved: bool
+    warning_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +177,23 @@ class Evidence:
 
 
 @dataclass(frozen=True)
+class EvidenceSufficiencyResult:
+    sufficient: bool
+    confidence_level: str
+    reason_code: str
+    reason: str
+    best_chunk_id: str | None
+    keyword_hit: bool
+    exact_article_hit: bool
+    lexical_coverage: float
+    vector_similarity: float | None
+    source_hint_match: bool
+    version_intent_match: bool
+    conflicting_evidence: bool
+    evaluated_evidence_count: int
+
+
+@dataclass(frozen=True)
 class VerifiedSource:
     evidence_id: str
     chunk_id: str
@@ -183,6 +222,10 @@ class AnswerResponse:
     error_code: str | None = None
     action_items: tuple[str, ...] = ()
     exceptions: tuple[str, ...] = ()
+    generation_retry_count: int = 0
+    sufficiency: EvidenceSufficiencyResult | None = None
+    generation_mode: str = "normal"
+    fallback_used: bool = False
 
 
 @dataclass(frozen=True)

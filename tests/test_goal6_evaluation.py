@@ -78,9 +78,23 @@ def test_goal6_fake_answer_evaluation_is_deterministic(tmp_path) -> None:
     assert result["answer"]["json_parse_success_rate"] == 1.0
     assert result["answer"]["schema_success_rate"] == 1.0
     assert result["answer"]["sqlite_source_verification_rate"] == 1.0
+    assert result["answer"]["required_fact_rate"] == 1.0
+    assert result["answer"]["all_required_facts_success_rate"] == 1.0
+    assert result["answer"]["forbidden_fact_detected_count"] == 0
+    assert result["answer"]["manual_review_count"] == 0
     assert result["answer"]["invalid_evidence_accepted_count"] == 0
     assert result["answer"]["prompt_or_raw_response_saved"] is False
     assert result["answer"]["ollama_calls_when_no_results"] == 0
+    assert "answerability_confusion_matrix" in result["answer"]
+    assert "false_refusal_rate" in result["answer"]
+    assert "pre_generation_refusal_count" in result["answer"]
+    assert "sufficiency_reason_counts" in result["answer"]
+    assert "model_call_avoided_count" in result["answer"]
+    assert "evidence_only_fallback_count" in result["answer"]
+    assert "fallback_false_answer_count" in result["answer"]
+    assert "required_fact_rate_given_answer" in result["answer"]
+    assert "end_to_end_required_fact_rate" in result["answer"]
+    assert "normal_generation_required_fact_rate" in result["answer"]
 
 
 def test_goal6_question_id_filter(tmp_path) -> None:

@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 from app.models.document import Document
 from app.services.document_extraction_service import DocumentExtractionService
 from app.services.document_service import DocumentService
-from app.services.exceptions import DocumentExtractionError, DocumentRegistrationError
+from app.services.exceptions import DocumentDeleteError, DocumentExtractionError, DocumentRegistrationError
 from app.services.search_index_service import SearchIndexService
 
 
@@ -104,6 +104,29 @@ class SearchIndexWorker(QObject):
             self.finished.emit()
 
 
+class DocumentDeleteWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, service: DocumentService, document_id: str) -> None:
+        super().__init__()
+        self._service = service
+        self._document_id = document_id
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self._service.delete_document(self._document_id)
+            self.succeeded.emit(result)
+        except DocumentDeleteError as exc:
+            self.failed.emit(exc.user_message)
+        except Exception:
+            self.failed.emit("문서를 삭제하는 중 예상하지 못한 오류가 발생했습니다.")
+        finally:
+            self.finished.emit()
+
+
 class DocumentViewModel(QObject):
     documents_changed = Signal(list)
     registration_started = Signal()
@@ -119,6 +142,12 @@ class DocumentViewModel(QObject):
     indexing_succeeded = Signal(object)
     indexing_failed = Signal(str)
     indexing_finished = Signal()
+    lifecycle_changed = Signal(object)
+    lifecycle_failed = Signal(str)
+    document_deletion_started = Signal()
+    document_deletion_succeeded = Signal(object)
+    document_deletion_failed = Signal(str)
+    document_deletion_finished = Signal()
 
     def __init__(
         self,
@@ -136,6 +165,8 @@ class DocumentViewModel(QObject):
         self._extraction_worker: DocumentExtractionWorker | None = None
         self._indexing_thread: QThread | None = None
         self._indexing_worker: SearchIndexWorker | None = None
+        self._delete_thread: QThread | None = None
+        self._delete_worker: DocumentDeleteWorker | None = None
 
     def description(self) -> str:
         return self._service.status_message()
@@ -217,6 +248,25 @@ class DocumentViewModel(QObject):
         self._indexing_thread.start()
         return True
 
+    def delete_document(self, document_id: str) -> bool:
+        if self._delete_thread is not None or any(thread is not None for thread in (self._thread, self._extraction_thread, self._indexing_thread)):
+            return False
+
+        self._delete_thread = QThread()
+        self._delete_worker = DocumentDeleteWorker(self._service, document_id)
+        self._delete_worker.moveToThread(self._delete_thread)
+        self._delete_thread.started.connect(self._delete_worker.run)
+        self._delete_worker.succeeded.connect(self._handle_delete_success)
+        self._delete_worker.failed.connect(self.document_deletion_failed)
+        self._delete_worker.finished.connect(self._delete_thread.quit)
+        self._delete_worker.finished.connect(self._delete_worker.deleteLater)
+        self._delete_thread.finished.connect(self._delete_thread.deleteLater)
+        self._delete_thread.finished.connect(self._clear_delete_worker)
+
+        self.document_deletion_started.emit()
+        self._delete_thread.start()
+        return True
+
     def load_chunks(self, document_id: str):
         if self._extraction_service is None:
             return []
@@ -232,6 +282,39 @@ class DocumentViewModel(QObject):
             return 0, 0, 0
         return self._extraction_service.counts_by_document(document_id)
 
+    def set_lifecycle_status(self, document_id: str, lifecycle_status: str) -> bool:
+        try:
+            document = self._service.set_lifecycle_status(document_id, lifecycle_status)
+        except DocumentRegistrationError as exc:
+            self.lifecycle_failed.emit(exc.user_message)
+            return False
+        except Exception:
+            self.lifecycle_failed.emit("문서 업무 상태를 변경하지 못했습니다.")
+            return False
+        self.lifecycle_changed.emit(document)
+        self.load_documents()
+        return True
+
+    def promote_current(self, document_id: str) -> bool:
+        try:
+            document, _archived_ids = self._service.promote_current(document_id)
+        except DocumentRegistrationError as exc:
+            self.lifecycle_failed.emit(exc.user_message)
+            return False
+        except Exception:
+            self.lifecycle_failed.emit("현행 문서 전환에 실패했습니다.")
+            return False
+        self.lifecycle_changed.emit(document)
+        self.load_documents()
+        return True
+
+    def shutdown(self, timeout_ms: int = 1500) -> None:
+        for thread in (self._thread, self._extraction_thread, self._indexing_thread, self._delete_thread):
+            if thread is not None and thread.isRunning():
+                thread.requestInterruption()
+                thread.quit()
+                thread.wait(timeout_ms)
+
     @Slot(object)
     def _handle_success(self, document: Document) -> None:
         self.registration_succeeded.emit(document)
@@ -245,6 +328,11 @@ class DocumentViewModel(QObject):
     @Slot(object)
     def _handle_indexing_success(self, result) -> None:
         self.indexing_succeeded.emit(result)
+        self.load_documents()
+
+    @Slot(object)
+    def _handle_delete_success(self, result) -> None:
+        self.document_deletion_succeeded.emit(result)
         self.load_documents()
 
     @Slot()
@@ -264,3 +352,9 @@ class DocumentViewModel(QObject):
         self._indexing_thread = None
         self._indexing_worker = None
         self.indexing_finished.emit()
+
+    @Slot()
+    def _clear_delete_worker(self) -> None:
+        self._delete_thread = None
+        self._delete_worker = None
+        self.document_deletion_finished.emit()

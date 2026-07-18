@@ -154,6 +154,9 @@ class DocumentView(QWidget):
         "셀",
         "청크",
         "추출 일시",
+        "업무 상태",
+        "버전 라벨",
+        "문서 계열",
     )
 
     def __init__(self, view_model: DocumentViewModel) -> None:
@@ -173,6 +176,9 @@ class DocumentView(QWidget):
         self.reextract_button = QPushButton("재추출")
         self.index_button = QPushButton("검색 인덱싱")
         self.reindex_button = QPushButton("재인덱싱")
+        self.current_button = QPushButton("현행 문서로 설정")
+        self.archive_button = QPushButton("보관 문서로 설정")
+        self.delete_button = QPushButton("선택 문서 삭제")
         self.refresh_button = QPushButton("새로고침")
         self.status_label = QLabel("")
         self.status_label.setObjectName("status_label")
@@ -185,6 +191,9 @@ class DocumentView(QWidget):
             self.reextract_button,
             self.index_button,
             self.reindex_button,
+            self.current_button,
+            self.archive_button,
+            self.delete_button,
             self.refresh_button,
         ):
             button_layout.addWidget(button)
@@ -215,6 +224,9 @@ class DocumentView(QWidget):
         self.preview_button.clicked.connect(self._preview_selected_document)
         self.index_button.clicked.connect(self._index_selected_document)
         self.reindex_button.clicked.connect(self._reindex_selected_document)
+        self.current_button.clicked.connect(self._set_selected_current)
+        self.archive_button.clicked.connect(self._set_selected_archived)
+        self.delete_button.clicked.connect(self._delete_selected_document)
         self.refresh_button.clicked.connect(self._view_model.load_documents)
         self.table.itemSelectionChanged.connect(self._update_action_buttons)
         self._view_model.documents_changed.connect(self._render_documents)
@@ -231,6 +243,12 @@ class DocumentView(QWidget):
         self._view_model.indexing_succeeded.connect(self._on_indexing_succeeded)
         self._view_model.indexing_failed.connect(self._on_indexing_failed)
         self._view_model.indexing_finished.connect(self._on_indexing_finished)
+        self._view_model.lifecycle_changed.connect(self._on_lifecycle_changed)
+        self._view_model.lifecycle_failed.connect(self._on_lifecycle_failed)
+        self._view_model.document_deletion_started.connect(self._on_deletion_started)
+        self._view_model.document_deletion_succeeded.connect(self._on_deletion_succeeded)
+        self._view_model.document_deletion_failed.connect(self._on_deletion_failed)
+        self._view_model.document_deletion_finished.connect(self._on_deletion_finished)
 
         self._view_model.load_documents()
         self._update_action_buttons()
@@ -280,6 +298,9 @@ class DocumentView(QWidget):
                 str(cell_count),
                 str(chunk_count),
                 document.parsed_at.strftime("%Y-%m-%d %H:%M:%S") if document.parsed_at else "미입력",
+                document.lifecycle_status,
+                document.version_label or "미입력",
+                document.document_family or "미입력",
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -335,6 +356,66 @@ class DocumentView(QWidget):
         if not self._view_model.index_document(document.id, force=True):
             QMessageBox.information(self, "인덱싱 진행 중", "이미 검색 인덱싱이 진행 중입니다.")
 
+    def _set_selected_current(self) -> None:
+        document = self._selected_document()
+        if document is None:
+            QMessageBox.information(self, "문서 선택", "먼저 문서를 선택해 주세요.")
+            return
+        message = "이 문서를 기본 검색 대상인 CURRENT로 설정합니다."
+        if document.document_family:
+            message += "\n같은 문서 계열의 다른 CURRENT 문서는 ARCHIVED로 전환될 수 있습니다."
+        if QMessageBox.question(self, "현행 문서 설정", message) != QMessageBox.StandardButton.Yes:
+            return
+        self._set_busy(True)
+        if not self._view_model.promote_current(document.id):
+            self._set_busy(False)
+            self._update_action_buttons()
+
+    def _set_selected_archived(self) -> None:
+        document = self._selected_document()
+        if document is None:
+            QMessageBox.information(self, "문서 선택", "먼저 문서를 선택해 주세요.")
+            return
+        message = "이 문서를 ARCHIVED로 설정합니다.\n기본 질문 검색에서는 제외됩니다."
+        if QMessageBox.question(self, "보관 문서 설정", message) != QMessageBox.StandardButton.Yes:
+            return
+        self._set_busy(True)
+        if not self._view_model.set_lifecycle_status(document.id, "ARCHIVED"):
+            self._set_busy(False)
+            self._update_action_buttons()
+
+    def _delete_selected_document(self) -> None:
+        document = self._selected_document()
+        if document is None:
+            QMessageBox.information(self, "문서 선택", "먼저 삭제할 문서를 선택해 주세요.")
+            return
+        if document.status in {"PARSING", "INDEXING"}:
+            QMessageBox.information(self, "삭제 불가", "문서가 처리 중이어서 삭제할 수 없습니다.")
+            return
+
+        sheet_count, cell_count, chunk_count = self._view_model.extraction_counts(document.id)
+        message = (
+            "선택한 문서의 내부 등록 데이터를 삭제합니다.\n\n"
+            f"파일명: {document.original_name}\n"
+            f"업무 상태: {document.lifecycle_status}\n"
+            f"처리 상태: {_display_status(document.status)}\n"
+            f"시트: {sheet_count}\n"
+            f"셀: {cell_count}\n"
+            f"청크: {chunk_count}\n\n"
+            "내부 복사본, 추출 데이터, 키워드/벡터 검색 인덱스가 삭제됩니다.\n"
+            "질문 이력과 검증 출처 스냅샷은 유지되며, 처음 선택했던 원본 엑셀 파일은 삭제하지 않습니다."
+        )
+        if document.lifecycle_status == "CURRENT":
+            message += "\nCURRENT 문서를 삭제해도 같은 계열의 보관 문서가 자동으로 승격되지는 않습니다."
+        if QMessageBox.question(self, "문서 삭제 확인", message) != QMessageBox.StandardButton.Yes:
+            return
+
+        self._set_busy(True)
+        if not self._view_model.delete_document(document.id):
+            self._set_busy(False)
+            self._update_action_buttons()
+            QMessageBox.information(self, "삭제 진행 중", "다른 문서 작업이 진행 중이어서 삭제를 시작할 수 없습니다.")
+
     def _update_action_buttons(self) -> None:
         document = self._selected_document()
         has_document = document is not None
@@ -345,6 +426,9 @@ class DocumentView(QWidget):
         self.preview_button.setEnabled(has_document and status in {"PARSED", "COMPLETED"} and not busy)
         self.index_button.setEnabled(has_document and status == "PARSED" and not busy)
         self.reindex_button.setEnabled(has_document and status == "COMPLETED" and not busy)
+        self.current_button.setEnabled(has_document and document.lifecycle_status != "CURRENT" and not busy)
+        self.archive_button.setEnabled(has_document and document.lifecycle_status != "ARCHIVED" and not busy)
+        self.delete_button.setEnabled(has_document and not busy)
 
     def _set_busy(self, is_busy: bool) -> None:
         self._is_busy = is_busy
@@ -354,6 +438,9 @@ class DocumentView(QWidget):
         self.preview_button.setEnabled(not is_busy)
         self.index_button.setEnabled(not is_busy)
         self.reindex_button.setEnabled(not is_busy)
+        self.current_button.setEnabled(not is_busy)
+        self.archive_button.setEnabled(not is_busy)
+        self.delete_button.setEnabled(not is_busy)
         self.refresh_button.setEnabled(not is_busy)
 
     def _on_registration_started(self) -> None:
@@ -424,6 +511,47 @@ class DocumentView(QWidget):
     def _on_indexing_finished(self) -> None:
         self._set_busy(False)
         self._view_model.load_documents()
+        self._update_action_buttons()
+
+    def _on_lifecycle_changed(self, document: Document) -> None:
+        self.status_label.setText(f"업무 상태 변경 완료: {document.lifecycle_status}")
+        self._set_busy(False)
+        self._update_action_buttons()
+
+    def _on_lifecycle_failed(self, message: str) -> None:
+        self.status_label.setText("업무 상태 변경 실패")
+        self._set_busy(False)
+        self._update_action_buttons()
+        QMessageBox.warning(self, "업무 상태 변경 실패", message)
+
+    def _on_deletion_started(self) -> None:
+        self._set_busy(True)
+        self.status_label.setText("문서를 삭제하는 중입니다.")
+
+    def _on_deletion_succeeded(self, result) -> None:
+        self.status_label.setText("문서 삭제 완료")
+        self.table.clearSelection()
+        message = (
+            "문서 삭제가 완료되었습니다.\n"
+            f"파일명: {result.display_name}\n"
+            f"문서 레코드: {result.deleted_document_count}\n"
+            f"시트: {result.deleted_sheet_count}\n"
+            f"셀: {result.deleted_cell_count}\n"
+            f"청크: {result.deleted_chunk_count}\n"
+            f"FTS 청크: {result.deleted_fts_count}\n"
+            f"벡터 청크: {result.deleted_vector_count}\n"
+            "질문 이력과 검증 출처 스냅샷은 유지되었습니다."
+        )
+        if result.warning_code == "FILE_FINALIZE_FAILED":
+            message += "\n내부 파일 정리는 재시도 대상입니다."
+        QMessageBox.information(self, "문서 삭제 완료", message)
+
+    def _on_deletion_failed(self, message: str) -> None:
+        self.status_label.setText("문서 삭제 실패")
+        QMessageBox.warning(self, "문서 삭제 실패", message)
+
+    def _on_deletion_finished(self) -> None:
+        self._set_busy(False)
         self._update_action_buttons()
 
 

@@ -49,6 +49,7 @@ class RetrievalService:
         mode: str = "hybrid",
         document_ids: list[str] | None = None,
         top_k: int | None = None,
+        include_archived: bool = False,
     ) -> SearchResponse:
         started = time.perf_counter()
         cleaned = " ".join(query.strip().split())
@@ -57,7 +58,7 @@ class RetrievalService:
         if mode not in {"keyword", "vector", "hybrid"}:
             raise RetrievalError("검색 모드는 keyword, vector, hybrid 중 하나여야 합니다.")
         requested_top_k = top_k or self._settings.search_top_k
-        ready_ids = self._index.ready_document_ids(document_ids)
+        ready_ids = self._index.ready_document_ids(document_ids, include_archived=include_archived)
         if not ready_ids:
             return SearchResponse(cleaned, mode, [], requested_top_k, 0, 0, 0, tuple(), ("READY 상태의 검색 인덱스가 없습니다.",))
 
@@ -114,6 +115,7 @@ class RetrievalService:
             score += _token_coverage_boost(search_text, chunk)
             score += _source_hint_boost(query, chunk)
             score += _version_intent_score(query, chunk)
+            score += _domain_phrase_boost(query, chunk)
             is_article_exact = bool(chunk and chunk.article in exact_articles) or chunk_id in article_exact_ids
             weighted.append(
                 _RankedCandidate(
@@ -134,6 +136,8 @@ class RetrievalService:
                 continue
             document = self._documents.get_by_id(chunk.document_id)
             if not document:
+                continue
+            if document.status != "COMPLETED":
                 continue
             matched_by = tuple(name for name, scores in (("keyword", keyword_scores), ("vector", vector_scores)) if candidate.chunk_id in scores)
             results.append(
@@ -232,6 +236,21 @@ def _version_intent_score(query: str, chunk) -> float:
     return (0.35 if has_legacy else 0.0) - (0.2 if has_current else 0.0)
 
 
+def _domain_phrase_boost(query: str, chunk) -> float:
+    if not chunk:
+        return 0.0
+    lowered = query.lower()
+    haystack = _chunk_haystack(chunk)
+    score = 0.0
+    if ("출장보고" in lowered or ("출장" in lowered and "보고" in lowered)) and "trip report" in haystack:
+        score += 0.45
+    if "보고서" in lowered and "report" in haystack:
+        score += 0.25
+    if ("긴급휴가" in lowered or ("긴급" in lowered and "휴가" in lowered)) and ("emergency" in haystack or "same day" in haystack):
+        score += 0.45
+    return score
+
+
 def _expand_query(query: str) -> str:
     additions: list[str] = []
     lowered = query.lower()
@@ -293,6 +312,11 @@ _QUERY_EXPANSIONS = (
     ("당일", ("same day",)),
     ("재택", ("remote", "work")),
     ("출장", ("travel", "business trip")),
+    ("출장보고", ("trip report", "business trip report", "report")),
+    ("서류", ("documents", "receipts", "receipt", "report", "trip report")),
+    ("제출", ("submit", "submitted", "submission", "receipts", "report")),
+    ("기한", ("deadline", "within", "before", "after", "days")),
+    ("후", ("after", "return")),
     ("신청", ("request", "requested", "before")),
     ("기한", ("deadline", "before", "days")),
     ("영수증", ("receipt", "receipts")),

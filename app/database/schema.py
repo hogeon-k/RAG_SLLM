@@ -28,10 +28,19 @@ def initialize_database(database_path: Path) -> None:
         )
         _add_column_if_missing(connection, "documents", "parsed_at", "TEXT NULL")
         _add_column_if_missing(connection, "documents", "parse_error", "TEXT NULL")
+        _add_column_if_missing(connection, "documents", "lifecycle_status", "TEXT NOT NULL DEFAULT 'CURRENT'")
+        _add_column_if_missing(connection, "documents", "version_label", "TEXT NULL")
+        _add_column_if_missing(connection, "documents", "effective_from", "TEXT NULL")
+        _add_column_if_missing(connection, "documents", "effective_to", "TEXT NULL")
+        _add_column_if_missing(connection, "documents", "document_family", "TEXT NULL")
+        _add_column_if_missing(connection, "documents", "supersedes_document_id", "TEXT NULL")
+        _add_column_if_missing(connection, "documents", "updated_at", "TEXT NULL")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_file_hash ON documents(file_hash)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_original_name ON documents(original_name)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_uploaded_at ON documents(uploaded_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_lifecycle_status ON documents(lifecycle_status)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_family ON documents(document_family)")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS document_sheets (

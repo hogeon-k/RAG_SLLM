@@ -56,12 +56,17 @@ class MainWindow(QMainWindow):
             item.setSizeHint(QSize(160, 44))
             self.sidebar.addItem(item)
 
+        self.question_view_model = QuestionViewModel(question_service)
+        self.document_view_model = DocumentViewModel(document_service, extraction_service, search_index_service)
+        self.history_view_model = HistoryViewModel(history_service)
+        self.settings_view_model = SettingsViewModel(settings, database_repository)
+
         self.stack = QStackedWidget()
         self.stack.setObjectName("content_stack")
-        self.stack.addWidget(QuestionView(QuestionViewModel(question_service)))
-        self.stack.addWidget(DocumentView(DocumentViewModel(document_service, extraction_service, search_index_service)))
-        self.stack.addWidget(HistoryView(HistoryViewModel(history_service)))
-        self.stack.addWidget(SettingsView(settings, SettingsViewModel(settings, database_repository)))
+        self.stack.addWidget(QuestionView(self.question_view_model))
+        self.stack.addWidget(DocumentView(self.document_view_model))
+        self.stack.addWidget(HistoryView(self.history_view_model))
+        self.stack.addWidget(SettingsView(settings, self.settings_view_model))
 
         self.sidebar.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.sidebar.setCurrentRow(0)
@@ -107,3 +112,15 @@ class MainWindow(QMainWindow):
             """
         )
         self.stack.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+    def closeEvent(self, event) -> None:
+        for view_model in (
+            self.question_view_model,
+            self.document_view_model,
+            self.history_view_model,
+            self.settings_view_model,
+        ):
+            shutdown = getattr(view_model, "shutdown", None)
+            if shutdown:
+                shutdown()
+        super().closeEvent(event)

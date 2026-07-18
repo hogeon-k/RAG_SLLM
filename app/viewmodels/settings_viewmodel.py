@@ -72,6 +72,12 @@ class SettingsViewModel(QObject):
         self._thread.start()
         return True
 
+    def shutdown(self, timeout_ms: int = 1500) -> None:
+        if self._thread is not None and self._thread.isRunning():
+            self._thread.requestInterruption()
+            self._thread.quit()
+            self._thread.wait(timeout_ms)
+
     @Slot()
     def _clear_worker(self) -> None:
         self._thread = None

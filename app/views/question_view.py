@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -37,6 +38,7 @@ class QuestionView(QWidget):
         self.query_edit.setPlaceholderText("검색할 규정 내용이나 조항 번호를 입력하세요")
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(("hybrid", "keyword", "vector"))
+        self.include_archived_check = QCheckBox("Include archived")
         self.search_button = QPushButton("검색")
         self.status_label = QLabel("")
         self.status_label.setObjectName("status_label")
@@ -44,6 +46,7 @@ class QuestionView(QWidget):
         search_layout = QHBoxLayout()
         search_layout.addWidget(self.query_edit, 1)
         search_layout.addWidget(self.mode_combo)
+        search_layout.addWidget(self.include_archived_check)
         search_layout.addWidget(self.search_button)
 
         self.table = QTableWidget(0, len(self.HEADERS))
@@ -79,7 +82,7 @@ class QuestionView(QWidget):
         if not query:
             QMessageBox.information(self, "Question", "Please enter a question.")
             return
-        if not self._view_model.start_answer(query, mode):
+        if not self._view_model.start_answer(query, mode, include_archived=self.include_archived_check.isChecked()):
             QMessageBox.information(self, "Busy", "A question is already being processed.")
             return
 
@@ -87,6 +90,7 @@ class QuestionView(QWidget):
         self.search_button.setEnabled(False)
         self.query_edit.setEnabled(False)
         self.mode_combo.setEnabled(False)
+        self.include_archived_check.setEnabled(False)
         self.status_label.setText("Answer generation is running.")
 
     def _on_answer_succeeded(self, response: AnswerResponse) -> None:
@@ -131,6 +135,7 @@ class QuestionView(QWidget):
         self.search_button.setEnabled(True)
         self.query_edit.setEnabled(True)
         self.mode_combo.setEnabled(True)
+        self.include_archived_check.setEnabled(True)
 
     def _show_selected_result(self) -> None:
         row = self.table.currentRow()

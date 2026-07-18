@@ -81,13 +81,24 @@ class SearchIndexRepository:
                 ),
             )
 
-    def ready_document_ids(self, document_ids: list[str] | None = None) -> list[str]:
-        sql = "SELECT document_id FROM document_search_indexes WHERE status = 'READY'"
+    def ready_document_ids(self, document_ids: list[str] | None = None, include_archived: bool = False) -> list[str]:
+        sql = """
+            SELECT i.document_id
+            FROM document_search_indexes i
+            JOIN documents d ON d.id = i.document_id
+            WHERE i.status = 'READY'
+              AND d.status = 'COMPLETED'
+        """
         params: list[object] = []
+        if include_archived:
+            sql += " AND d.lifecycle_status IN ('CURRENT', 'ARCHIVED')"
+        else:
+            sql += " AND d.lifecycle_status = 'CURRENT'"
         if document_ids:
             placeholders = ",".join("?" for _ in document_ids)
-            sql += f" AND document_id IN ({placeholders})"
+            sql += f" AND i.document_id IN ({placeholders})"
             params.extend(document_ids)
+        sql += " ORDER BY CASE d.lifecycle_status WHEN 'CURRENT' THEN 0 ELSE 1 END, d.uploaded_at DESC, i.document_id ASC"
         with open_connection(self._database_path) as connection:
             rows = connection.execute(sql, tuple(params)).fetchall()
         return [row["document_id"] for row in rows]
@@ -121,4 +132,3 @@ def _row_to_status(row) -> SearchIndexStatus:
         index_error=row["index_error"],
         content_fingerprint=row["content_fingerprint"],
     )
-

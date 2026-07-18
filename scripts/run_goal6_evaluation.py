@@ -33,6 +33,7 @@ from app.services.history_service import HistoryService
 from app.services.retrieval_service import RetrievalService
 from app.services.search_index_service import SearchIndexService
 from app.storage.vector_storage import ChromaVectorRepository
+from scripts.goal7_fact_evaluation import evaluate_answer_facts, fact_group, normalize_fact_text, validate_fact_groups
 
 
 DEFAULT_FIXTURE_DIR = PROJECT_ROOT / "data" / "test_workbooks" / "goal6"
@@ -131,7 +132,7 @@ def generate_goal6_fixtures(output_dir: Path = DEFAULT_FIXTURE_DIR) -> Path:
     for spec in docs:
         _write_workbook(output_dir / spec["file_name"], spec)
     manifest = {
-        "version": "1.0",
+        "version": "1.1",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "documents": [
             {
@@ -415,8 +416,7 @@ def _retrieval_metrics(rows: list[dict[str, Any]], latencies: list[int]) -> dict
 
 def _answer_row(question: dict[str, Any], response: AnswerResponse, fake_call_count: int | None) -> dict[str, Any]:
     answer = response.answer or ""
-    required = question.get("expected_answer_facts", [])
-    forbidden = question.get("forbidden_answer_facts", [])
+    fact_result = evaluate_answer_facts(question, answer, response.insufficient_evidence)
     source_hits = [_source_matches_gold(source, question) for source in response.verified_sources]
     return {
         "question_id": question["question_id"],
@@ -425,15 +425,36 @@ def _answer_row(question: dict[str, Any], response: AnswerResponse, fake_call_co
         "json_valid": True,
         "schema_valid": True,
         "insufficient_evidence": response.insufficient_evidence,
+        "answer_excerpt": _truncate(answer, 240),
         "used_evidence_count": len(response.used_evidence),
         "verified_source_count": len(response.verified_sources),
         "sqlite_source_verified": len(response.verified_sources) == len(response.used_evidence),
         "invalid_evidence_accepted": False,
         "source_exact": all(source_hits) if response.verified_sources else not question["answerable"],
-        "required_fact_pass": all(fact in answer for fact in required),
-        "forbidden_fact_pass": not any(fact in answer for fact in forbidden),
+        "required_fact_total": fact_result.required_fact_total,
+        "matched_fact_ids": fact_result.matched_fact_ids,
+        "missing_fact_ids": fact_result.missing_fact_ids,
+        "forbidden_fact_ids": fact_result.forbidden_fact_ids,
+        "required_fact_rate": fact_result.required_fact_rate,
+        "required_fact_pass": fact_result.required_fact_rate == 1.0,
+        "forbidden_fact_pass": fact_result.forbidden_fact_pass,
+        "manual_review_required": fact_result.manual_review_required,
+        "manual_review_reason": fact_result.manual_review_reason,
+        "failure_cause": _classify_answer_failure(question, response, fact_result),
         "empty_answer": not bool(answer.strip()),
         "fake_call_count": fake_call_count,
+        "generation_retry_count": response.generation_retry_count,
+        "generation_mode": response.generation_mode,
+        "fallback_used": response.fallback_used,
+        "sufficiency_confidence": response.sufficiency.confidence_level if response.sufficiency else None,
+        "sufficiency_reason_code": response.sufficiency.reason_code if response.sufficiency else None,
+        "sufficiency_keyword_hit": response.sufficiency.keyword_hit if response.sufficiency else None,
+        "sufficiency_exact_article_hit": response.sufficiency.exact_article_hit if response.sufficiency else None,
+        "sufficiency_lexical_coverage": response.sufficiency.lexical_coverage if response.sufficiency else None,
+        "sufficiency_vector_similarity": response.sufficiency.vector_similarity if response.sufficiency else None,
+        "sufficiency_source_hint_match": response.sufficiency.source_hint_match if response.sufficiency else None,
+        "sufficiency_version_intent_match": response.sufficiency.version_intent_match if response.sufficiency else None,
+        "sufficiency_conflicting_evidence": response.sufficiency.conflicting_evidence if response.sufficiency else None,
         "elapsed_ms": response.elapsed_time_ms,
     }
 
@@ -442,14 +463,55 @@ def _answer_metrics(rows: list[dict[str, Any]], ollama_calls_when_no_results: in
     total = max(1, len(rows))
     answerable = [row for row in rows if row.get("answerable")]
     unanswerable = [row for row in rows if not row.get("answerable")]
+    answered_answerable = [row for row in answerable if not row.get("insufficient_evidence")]
+    normal_answerable = [row for row in answered_answerable if not row.get("fallback_used")]
+    true_answer = sum(1 for row in answerable if not row.get("insufficient_evidence"))
+    false_refusal = sum(1 for row in answerable if row.get("insufficient_evidence"))
+    true_refusal = sum(1 for row in unanswerable if row.get("insufficient_evidence"))
+    false_answer = sum(1 for row in unanswerable if not row.get("insufficient_evidence"))
+    retry_rows = [row for row in rows if row.get("generation_retry_count", 0) > 0]
+    fallback_rows = [row for row in rows if row.get("fallback_used")]
+    low_fallback_rows = [row for row in fallback_rows if row.get("sufficiency_confidence") == "LOW"]
+    unanswerable_fallback_rows = [row for row in fallback_rows if not row.get("answerable")]
+    model_insufficient_fallback_rows = [row for row in fallback_rows if row.get("generation_mode") == "safe_refusal"]
     return {
         "json_parse_success_rate": sum(1 for row in rows if row.get("json_valid")) / total,
         "schema_success_rate": sum(1 for row in rows if row.get("schema_valid")) / total,
         "source_exact_match_rate": sum(1 for row in answerable if row.get("source_exact")) / max(1, len(answerable)),
-        "required_fact_rate": sum(1 for row in answerable if row.get("required_fact_pass")) / max(1, len(answerable)),
+        "required_fact_rate": statistics.mean(row.get("required_fact_rate", 1.0) for row in answerable) if answerable else 1.0,
+        "required_fact_rate_given_answer": statistics.mean(row.get("required_fact_rate", 1.0) for row in answered_answerable) if answered_answerable else 1.0,
+        "end_to_end_required_fact_rate": statistics.mean(row.get("required_fact_rate", 0.0) if not row.get("insufficient_evidence") else 0.0 for row in answerable) if answerable else 1.0,
+        "normal_generation_required_fact_rate": statistics.mean(row.get("required_fact_rate", 1.0) for row in normal_answerable) if normal_answerable else 1.0,
+        "all_required_facts_success_rate": sum(1 for row in answerable if row.get("required_fact_pass")) / max(1, len(answerable)),
         "forbidden_fact_pass_rate": sum(1 for row in rows if row.get("forbidden_fact_pass", True)) / total,
+        "forbidden_fact_detected_count": sum(len(row.get("forbidden_fact_ids", [])) for row in rows),
+        "manual_review_count": sum(1 for row in rows if row.get("manual_review_required")),
+        "retry_rate": sum(1 for row in rows if row.get("generation_retry_count", 0) > 0) / total,
+        "avg_retry_count": statistics.mean(row.get("generation_retry_count", 0) for row in rows) if rows else 0,
+        "retry_count": sum(row.get("generation_retry_count", 0) for row in rows),
+        "retry_success_count": sum(1 for row in retry_rows if not row.get("insufficient_evidence") and not row.get("fallback_used")),
+        "retry_failure_count": sum(1 for row in retry_rows if row.get("insufficient_evidence")),
+        "category_fact_coverage": _category_fact_coverage(rows),
         "abstention_accuracy": sum(1 for row in unanswerable if row.get("insufficient_evidence")) / max(1, len(unanswerable)),
-        "false_answer_rate": sum(1 for row in unanswerable if not row.get("insufficient_evidence")) / max(1, len(unanswerable)),
+        "false_answer_rate": false_answer / max(1, len(unanswerable)),
+        "false_refusal_rate": false_refusal / max(1, len(answerable)),
+        "answerability_confusion_matrix": {
+            "answerable_answered": true_answer,
+            "answerable_refused": false_refusal,
+            "unanswerable_refused": true_refusal,
+            "unanswerable_answered": false_answer,
+        },
+        "pre_generation_refusal_count": sum(1 for row in rows if row.get("sufficiency_confidence") == "LOW" and row.get("insufficient_evidence")),
+        "model_call_avoided_count": sum(1 for row in rows if row.get("generation_mode") == "pre_generation_refusal"),
+        "sufficiency_reason_counts": dict(Counter(row.get("sufficiency_reason_code") for row in rows if row.get("sufficiency_reason_code"))),
+        "sufficiency_confidence_counts": dict(Counter(row.get("sufficiency_confidence") for row in rows if row.get("sufficiency_confidence"))),
+        "normal_generation_count": sum(1 for row in rows if row.get("generation_mode") == "normal"),
+        "evidence_only_fallback_count": len(fallback_rows),
+        "refusal_count": sum(1 for row in rows if row.get("insufficient_evidence")),
+        "fallback_false_answer_count": sum(1 for row in fallback_rows if not row.get("answerable") and not row.get("insufficient_evidence")),
+        "fallback_on_low_evidence_count": len(low_fallback_rows),
+        "fallback_on_unanswerable_count": len(unanswerable_fallback_rows),
+        "fallback_after_model_insufficient_count": len(model_insufficient_fallback_rows),
         "sqlite_source_verification_rate": sum(1 for row in answerable if row.get("sqlite_source_verified")) / max(1, len(answerable)),
         "invalid_evidence_accepted_count": sum(1 for row in rows if row.get("invalid_evidence_accepted")),
         "prompt_or_raw_response_saved": False,
@@ -469,6 +531,36 @@ def _source_matches_gold(source: VerifiedSource, question: dict[str, Any]) -> bo
     )
 
 
+def _classify_answer_failure(question: dict[str, Any], response: AnswerResponse, fact_result) -> str | None:
+    if not question.get("answerable"):
+        return None if response.insufficient_evidence else "MODEL_LIMITATION"
+    if not response.verified_sources:
+        return "WRONG_EVIDENCE_SELECTION" if response.insufficient_evidence else "RETRIEVAL_MISS"
+    if not all(_source_matches_gold(source, question) for source in response.verified_sources):
+        return "WRONG_EVIDENCE_SELECTION"
+    if fact_result.forbidden_fact_ids:
+        return "MODEL_LIMITATION"
+    if not fact_result.missing_fact_ids:
+        return None
+    source_text = normalize_fact_text(" ".join(source.content for source in response.verified_sources))
+    missing_groups = [
+        group
+        for group in question.get("required_fact_groups", [])
+        if group.get("fact_id") in set(fact_result.missing_fact_ids)
+    ]
+    if missing_groups and not any(_group_alias_in_text(group, source_text) for group in missing_groups):
+        return "EVIDENCE_FACT_MISSING"
+    if any(any(char.isdigit() for char in str(alias)) for group in missing_groups for alias in group.get("aliases", [])):
+        return "NUMERIC_FACT_OMISSION"
+    if any("business" in " ".join(group.get("aliases", [])).lower() for group in missing_groups):
+        return "CONDITION_OMISSION"
+    return "ANSWER_FACT_OMISSION"
+
+
+def _group_alias_in_text(group: dict[str, Any], normalized_text: str) -> bool:
+    return any(normalize_fact_text(str(alias)) in normalized_text for alias in group.get("aliases", []))
+
+
 def _document_key_matches(document_key: str, original_name: str) -> bool:
     expected = {
         "hr_policy": "hr_policy_goal6.xlsx",
@@ -476,6 +568,18 @@ def _document_key_matches(document_key: str, original_name: str) -> bool:
         "security_policy": "security_records_goal6.xlsx",
     }
     return original_name == expected.get(document_key, document_key)
+
+
+def _category_fact_coverage(rows: list[dict[str, Any]]) -> dict[str, dict[str, float | int]]:
+    coverage: dict[str, dict[str, float | int]] = {}
+    for category in sorted({row["category"] for row in rows if row.get("answerable")}):
+        category_rows = [row for row in rows if row.get("answerable") and row["category"] == category]
+        coverage[category] = {
+            "count": len(category_rows),
+            "required_fact_rate": statistics.mean(row.get("required_fact_rate", 1.0) for row in category_rows) if category_rows else 1.0,
+            "all_required_facts_success_rate": sum(1 for row in category_rows if row.get("required_fact_pass")) / max(1, len(category_rows)),
+        }
+    return coverage
 
 
 def _write_reports(result: dict[str, Any], output_dir: Path) -> None:
@@ -494,6 +598,11 @@ def _write_reports(result: dict[str, Any], output_dir: Path) -> None:
 
 def _safe_file_part(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in value)
+
+
+def _truncate(value: str, limit: int) -> str:
+    cleaned = " ".join(value.split())
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 3] + "..."
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -522,7 +631,7 @@ def _fixture_set_ready(output_dir: Path, docs: list[dict[str, Any]], manifest_pa
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return len(manifest.get("documents", [])) == len(docs) and len(manifest.get("questions", [])) >= 30
+    return manifest.get("version") == "1.1" and len(manifest.get("documents", [])) == len(docs) and len(manifest.get("questions", [])) >= 30
 
 
 def _markdown_report(result: dict[str, Any]) -> str:
@@ -565,10 +674,52 @@ def _markdown_report(result: dict[str, Any]) -> str:
                 f"- JSON success: {answer.get('json_parse_success_rate', 0):.3f}",
                 f"- Schema success: {answer.get('schema_success_rate', 0):.3f}",
                 f"- Source exact match: {answer.get('source_exact_match_rate', 0):.3f}",
+                f"- Required fact rate: {answer.get('required_fact_rate', 0):.3f}",
+                f"- All required facts success: {answer.get('all_required_facts_success_rate', 0):.3f}",
+                f"- Forbidden fact pass: {answer.get('forbidden_fact_pass_rate', 0):.3f}",
                 f"- Abstention accuracy: {answer.get('abstention_accuracy', 0):.3f}",
                 f"- False answer rate: {answer.get('false_answer_rate', 0):.3f}",
+                f"- False refusal rate: {answer.get('false_refusal_rate', 0):.3f}",
+                f"- Manual review count: {answer.get('manual_review_count', 0)}",
+                f"- Retry rate: {answer.get('retry_rate', 0):.3f}",
+                f"- Pre-generation refusals: {answer.get('pre_generation_refusal_count', 0)}",
+                f"- Evidence-only fallback count: {answer.get('evidence_only_fallback_count', 0)}",
+                f"- Fallback false answer count: {answer.get('fallback_false_answer_count', 0)}",
             ]
         )
+        matrix = answer.get("answerability_confusion_matrix", {})
+        if matrix:
+            lines.extend(
+                [
+                    "",
+                    "### Answerability Confusion Matrix",
+                    "| answerable_answered | answerable_refused | unanswerable_refused | unanswerable_answered |",
+                    "| --- | --- | --- | --- |",
+                    "| "
+                    + " | ".join(
+                        str(matrix.get(key, 0))
+                        for key in ("answerable_answered", "answerable_refused", "unanswerable_refused", "unanswerable_answered")
+                    )
+                    + " |",
+                ]
+            )
+        review_rows = [row for row in answer.get("rows", []) if row.get("manual_review_required") or row.get("failure_cause")]
+        if review_rows:
+            lines.extend(["", "### Manual Review", "| question_id | category | cause | missing | forbidden |", "| --- | --- | --- | --- | --- |"])
+            for row in review_rows[:20]:
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        [
+                            str(row.get("question_id", "")),
+                            str(row.get("category", "")),
+                            str(row.get("failure_cause") or row.get("manual_review_reason") or ""),
+                            ", ".join(row.get("missing_fact_ids", [])),
+                            ", ".join(row.get("forbidden_fact_ids", [])),
+                        ]
+                    )
+                    + " |"
+                )
     lines.extend(["", "## Security", "- No local DB paths, Chroma paths, prompts, or raw model responses are included."])
     return "\n".join(lines) + "\n"
 
@@ -588,6 +739,14 @@ def _passes_thresholds(result: dict[str, Any]) -> bool:
     if answer and answer.get("json_parse_success_rate", 0) < 0.90:
         return False
     if answer and answer.get("invalid_evidence_accepted_count", 0) != 0:
+        return False
+    if answer and answer.get("sqlite_source_verification_rate", 1.0) < 1.0:
+        return False
+    if answer and answer.get("abstention_accuracy", 1.0) < 1.0:
+        return False
+    if answer and answer.get("required_fact_rate", 1.0) < 0.90:
+        return False
+    if answer and answer.get("forbidden_fact_detected_count", 0) != 0:
         return False
     return True
 
@@ -800,10 +959,53 @@ def _questions() -> list[dict[str, Any]]:
                 "gold_sources": sources,
                 "expected_answer_facts": facts,
                 "forbidden_answer_facts": forbidden,
+                "required_fact_groups": [_required_fact_group(fact) for fact in facts],
+                "forbidden_fact_groups": [_forbidden_fact_group(fact) for fact in forbidden],
                 "refusal_expected": not answerable,
             }
         )
     return questions
+
+
+def _required_fact_group(fact: str) -> dict[str, Any]:
+    return fact_group(f"required_{_fact_slug(fact)}", _fact_aliases(fact), description=fact)
+
+
+def _forbidden_fact_group(fact: str) -> dict[str, Any]:
+    return fact_group(f"forbidden_{_fact_slug(fact)}", _fact_aliases(fact), description=fact)
+
+
+def _fact_slug(fact: str) -> str:
+    slug = "".join(char.lower() if char.isalnum() else "_" for char in fact).strip("_")
+    return slug or "fact"
+
+
+def _fact_aliases(fact: str) -> list[str]:
+    aliases = {
+        fact,
+        fact.replace(" ", ""),
+    }
+    expansions = {
+        "three business days": ["3 business days", "three days before", "3 days before", "3영업일", "3 영업일", "사흘 전"],
+        "same day": ["on the same day", "당일", "같은 날"],
+        "two days per week": ["2 days per week", "two days weekly", "주 2일", "주2일"],
+        "two business days": ["2 business days", "2영업일", "2 영업일"],
+        "within three days": ["within 3 days", "3 days after", "3일 이내", "3 일 이내"],
+        "30000 KRW": ["30,000 KRW", "30000 won", "30,000원", "30000원"],
+        "200000 KRW": ["200,000 KRW", "200000 won", "200,000원", "200000원"],
+        "team lead approval": ["team leader approval", "team lead 승인", "팀장 승인", "팀 리드 승인"],
+        "twelve characters": ["12 characters", "12자", "열두 자"],
+        "within one hour": ["within 1 hour", "1 hour", "1시간 이내", "한 시간 이내"],
+        "five years": ["5 years", "5년", "오 년"],
+        "ninety days": ["90 days", "90일", "구십 일"],
+        "five days": ["5 days", "5일", "닷새"],
+        "special character": ["special characters", "%", "_", "backslash", "특수문자"],
+        "trip report": ["business trip report", "출장보고서", "출장 보고서"],
+        "Receipts": ["receipts", "receipt", "영수증"],
+        "18:00": ["6 PM", "18시", "오후 6시"],
+    }
+    aliases.update(expansions.get(fact, []))
+    return sorted(alias for alias in aliases if alias)
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
@@ -824,6 +1026,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise ValueError(f"Answerable question has no gold source: {question['question_id']}")
         if not question["answerable"] and question["gold_sources"]:
             raise ValueError(f"Unanswerable question has gold source: {question['question_id']}")
+    validate_fact_groups(manifest["questions"])
 
 
 def main() -> int:

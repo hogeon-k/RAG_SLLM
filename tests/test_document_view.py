@@ -25,6 +25,12 @@ class FakeDocumentViewModel:
             indexing_succeeded = Signal(object)
             indexing_failed = Signal(str)
             indexing_finished = Signal()
+            lifecycle_changed = Signal(object)
+            lifecycle_failed = Signal(str)
+            document_deletion_started = Signal()
+            document_deletion_succeeded = Signal(object)
+            document_deletion_failed = Signal(str)
+            document_deletion_finished = Signal()
 
         self._signals = Signals()
         self.documents_changed = self._signals.documents_changed
@@ -41,7 +47,15 @@ class FakeDocumentViewModel:
         self.indexing_succeeded = self._signals.indexing_succeeded
         self.indexing_failed = self._signals.indexing_failed
         self.indexing_finished = self._signals.indexing_finished
+        self.lifecycle_changed = self._signals.lifecycle_changed
+        self.lifecycle_failed = self._signals.lifecycle_failed
+        self.document_deletion_started = self._signals.document_deletion_started
+        self.document_deletion_succeeded = self._signals.document_deletion_succeeded
+        self.document_deletion_failed = self._signals.document_deletion_failed
+        self.document_deletion_finished = self._signals.document_deletion_finished
         self._documents = documents or []
+        self.lifecycle_calls: list[tuple[str, str]] = []
+        self.delete_calls: list[str] = []
 
     def load_documents(self):
         self.documents_changed.emit(self._documents)
@@ -56,6 +70,18 @@ class FakeDocumentViewModel:
     def index_document(self, *args, **kwargs) -> bool:
         return True
 
+    def set_lifecycle_status(self, document_id, lifecycle_status) -> bool:
+        self.lifecycle_calls.append((document_id, lifecycle_status))
+        return True
+
+    def promote_current(self, document_id) -> bool:
+        self.lifecycle_calls.append((document_id, "CURRENT"))
+        return True
+
+    def delete_document(self, document_id) -> bool:
+        self.delete_calls.append(document_id)
+        return True
+
     def load_chunks(self, document_id):
         return []
 
@@ -66,7 +92,7 @@ class FakeDocumentViewModel:
         return 0, 0, 0
 
 
-def _document(status: str = "UPLOADED") -> Document:
+def _document(status: str = "UPLOADED", lifecycle_status: str = "CURRENT") -> Document:
     return Document(
         id="DOC-1",
         original_name="rules.xlsx",
@@ -81,6 +107,7 @@ def _document(status: str = "UPLOADED") -> Document:
         status=status,
         error_message=None,
         uploaded_at=datetime(2026, 1, 1, 10, 0, 0),
+        lifecycle_status=lifecycle_status,
     )
 
 
@@ -101,6 +128,7 @@ def test_document_view_renders_documents(qtbot) -> None:
     assert view.table.item(0, 0).text() == "rules.xlsx"
     assert view.table.item(0, 1).text() == "미입력"
     assert view.table.item(0, 7).text() == "등록 완료"
+    assert view.table.item(0, 12).text() == "CURRENT"
 
 
 def test_document_view_reenables_button_after_failure(qtbot) -> None:
@@ -162,3 +190,53 @@ def test_document_view_keeps_index_buttons_disabled_while_busy(qtbot) -> None:
     view.table.selectRow(0)
     assert not view.index_button.isEnabled()
     assert not view.reindex_button.isEnabled()
+
+
+def test_document_view_lifecycle_buttons_follow_status(qtbot) -> None:
+    view = DocumentView(FakeDocumentViewModel([_document("COMPLETED", "CURRENT")]))
+    qtbot.addWidget(view)
+    view.table.selectRow(0)
+
+    assert not view.current_button.isEnabled()
+    assert view.archive_button.isEnabled()
+
+    view._render_documents([_document("COMPLETED", "ARCHIVED")])
+    view.table.selectRow(0)
+
+    assert view.current_button.isEnabled()
+    assert not view.archive_button.isEnabled()
+
+    view._render_documents([_document("INDEXING", "CURRENT")])
+    view.table.selectRow(0)
+
+    assert not view.current_button.isEnabled()
+    assert not view.archive_button.isEnabled()
+
+
+def test_document_view_delete_button_follows_document_status(qtbot) -> None:
+    view = DocumentView(FakeDocumentViewModel([_document("COMPLETED")]))
+    qtbot.addWidget(view)
+    view.table.selectRow(0)
+
+    assert view.delete_button.isEnabled()
+
+    view._render_documents([_document("INDEXING")])
+    view.table.selectRow(0)
+
+    assert not view.delete_button.isEnabled()
+
+
+def test_document_view_delete_confirmation_calls_view_model(qtbot, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    model = FakeDocumentViewModel([_document("COMPLETED")])
+    view = DocumentView(model)
+    qtbot.addWidget(view)
+    view.table.selectRow(0)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.StandardButton.Ok)
+
+    view._delete_selected_document()
+
+    assert model.delete_calls == ["DOC-1"]
+    assert not view.delete_button.isEnabled()

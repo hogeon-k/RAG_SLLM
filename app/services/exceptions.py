@@ -25,6 +25,12 @@ class DocumentExtractionError(DocumentRegistrationError):
     pass
 
 
+class DocumentDeleteError(DocumentRegistrationError):
+    def __init__(self, code: str, user_message: str) -> None:
+        super().__init__(user_message)
+        self.code = code
+
+
 class SearchIndexError(DocumentRegistrationError):
     pass
 

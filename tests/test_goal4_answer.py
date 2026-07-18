@@ -145,9 +145,12 @@ def test_prompt_contains_only_evidence_fields() -> None:
 
     assert "E1" in prompt
     assert "Apply three days before leave." in prompt
+    assert "Preserve supported numbers" in prompt
     assert "model-must-not-use.xlsx" not in prompt
     assert "FakeSheet" not in prompt
     assert "Z9:Z9" not in prompt
+    assert "expected_answer" not in prompt
+    assert "required_fact" not in prompt
 
 
 def test_answer_validates_ids_and_uses_sqlite_sources(tmp_path) -> None:
@@ -238,3 +241,80 @@ def test_no_evidence_does_not_call_ollama(tmp_path) -> None:
     assert response.insufficient_evidence
     assert response.error_code == "NO_EVIDENCE"
     assert ollama.prompts == []
+
+
+def test_weak_evidence_is_refused_before_ollama_call(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed(settings)
+    ollama = FakeOllamaClient(json.dumps({"answer": "Invented answer.", "insufficient_evidence": False, "used_evidence_ids": ["E1"], "reason": ""}))
+    service = AnswerService(settings, FakeRetrievalService(_search_response([_result()])), ollama_client=ollama)
+
+    response = service.answer("사내 주차장 배정 기준은 무엇인가요?")
+
+    assert response.insufficient_evidence
+    assert response.error_code == "INSUFFICIENT_EVIDENCE"
+    assert response.used_evidence == []
+    assert response.verified_sources == []
+    assert response.sufficiency is not None
+    assert response.sufficiency.confidence_level == "LOW"
+    assert ollama.prompts == []
+
+
+def test_answer_retries_and_falls_back_to_grounded_sentence_for_incomplete_answer(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed(settings)
+    result = _result()
+    result = SearchResult(
+        result.chunk_id,
+        result.document_id,
+        result.original_name,
+        result.version,
+        result.sheet_name,
+        result.section,
+        result.article,
+        result.title,
+        "Annual leave must be requested three business days before the planned start date.",
+        result.cell_range,
+        result.cell_refs,
+        result.keyword_score,
+        result.vector_score,
+        result.final_score,
+        result.matched_by,
+        result.rank,
+    )
+    ollama = FakeOllamaClient(
+        [
+            json.dumps({"answer": "3", "insufficient_evidence": False, "used_evidence_ids": ["E1"], "reason": ""}),
+            json.dumps({"answer": "3", "insufficient_evidence": False, "used_evidence_ids": ["E1"], "reason": ""}),
+        ]
+    )
+    service = AnswerService(settings, FakeRetrievalService(_search_response([result])), ollama_client=ollama)
+
+    response = service.answer("연차는 며칠 전에 신청해야 하나요?")
+
+    assert "three business days" in response.answer
+    assert response.generation_retry_count == 1
+    assert response.generation_mode == "evidence_only_fallback"
+    assert response.fallback_used is True
+    assert len(ollama.prompts) == 2
+
+
+def test_supported_evidence_retries_model_false_refusal_then_refuses(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed(settings)
+    ollama = FakeOllamaClient(
+        [
+            json.dumps({"answer": "", "insufficient_evidence": True, "used_evidence_ids": [], "reason": "insufficient"}),
+            json.dumps({"answer": "", "insufficient_evidence": True, "used_evidence_ids": [], "reason": "insufficient"}),
+        ]
+    )
+    service = AnswerService(settings, FakeRetrievalService(_search_response([_result()])), ollama_client=ollama)
+
+    response = service.answer("leave")
+
+    assert response.insufficient_evidence is True
+    assert response.answer == ""
+    assert response.used_evidence == []
+    assert response.generation_mode == "safe_refusal"
+    assert response.fallback_used is False
+    assert response.generation_retry_count == 1
