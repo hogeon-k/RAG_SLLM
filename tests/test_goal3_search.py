@@ -355,3 +355,66 @@ def test_retrieval_prioritizes_exact_article_in_keyword_and_hybrid(tmp_path) -> 
     assert retrieval.search("제8조의2", mode="keyword").results[0].cell_range == "A18:F20"
     assert retrieval.search("제8조", mode="hybrid").results[0].cell_range == "A13:F16"
     assert retrieval.search("제8조의2", mode="hybrid").results[0].cell_range == "A18:F20"
+
+
+def test_hybrid_prioritizes_lane_violation_type_chunk(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    document = _document("DOC-LANE")
+    DocumentRepository(settings.database_path).create(document)
+    chunks = [
+        DocumentChunk(
+            "DOC-LANE-S001-C0000",
+            "DOC-LANE",
+            "DOC-LANE-S001",
+            "영업실무",
+            "A1",
+            "B3",
+            "A1:B3",
+            ("A1", "B1"),
+            1,
+            3,
+            None,
+            None,
+            None,
+            "출구위반처리",
+            "출구위반처리 | 출구 하이패스 차로에서 발생되는 위반차량을 조회하며 처리유형 적정성을 심사한다.",
+            0,
+            "hash-lane-bad",
+            datetime(2026, 1, 1),
+        ),
+        DocumentChunk(
+            "DOC-LANE-S001-C0001",
+            "DOC-LANE",
+            "DOC-LANE-S001",
+            "영업실무",
+            "A4",
+            "B8",
+            "A4:B8",
+            ("A4", "B4"),
+            4,
+            8,
+            None,
+            None,
+            None,
+            "하이패스 위반 유형",
+            "하이패스 위반 유형 | 입구정보이상은 입구에서 일반차로 이용, 하이패스 차로에서 단말기 미작동, 휴게소에서 단말기 구입후 진출 등이다.",
+            1,
+            "hash-lane-good",
+            datetime(2026, 1, 1),
+        ),
+    ]
+    ExtractionRepository(settings.database_path).replace_extraction(
+        document.id,
+        [ParsedSheet("DOC-LANE-S001", document.id, "영업실무", 0, "visible", 8, 2, 2, 0, datetime(2026, 1, 1))],
+        [],
+        chunks,
+    )
+    embedding = FakeEmbeddingService()
+    vector = ChromaVectorRepository(settings.vector_db_dir, "lane_collection", "fake-fingerprint")
+    SearchIndexService(settings, embedding_service=embedding, vector_repository=vector).index_document(document.id)
+    retrieval = RetrievalService(settings, embedding_service=embedding, vector_repository=vector)
+
+    response = retrieval.search("일반차로 위반 유형은?", mode="hybrid")
+
+    assert response.results[0].chunk_id == "DOC-LANE-S001-C0001"
+

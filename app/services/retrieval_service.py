@@ -248,6 +248,14 @@ def _domain_phrase_boost(query: str, chunk) -> float:
         score += 0.25
     if ("긴급휴가" in lowered or ("긴급" in lowered and "휴가" in lowered)) and ("emergency" in haystack or "same day" in haystack):
         score += 0.45
+    if "일반차로" in lowered and "일반차로" in haystack:
+        score += 0.55
+    if "위반" in lowered and "유형" in lowered and "위반 유형" in haystack:
+        score += 0.45
+    if "하이패스" in haystack and "위반 유형" in haystack and ("일반차로" in haystack or "입구정보이상" in haystack):
+        score += 0.25
+    if "출구위반처리" in haystack and "일반차로" not in haystack and "유형" in lowered:
+        score -= 0.35
     return score
 
 

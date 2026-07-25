@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import inspect
@@ -14,6 +15,9 @@ from app.services.evidence_sufficiency import assess_evidence_sufficiency, refus
 from app.services.exceptions import AnswerGenerationError, RetrievalError
 from app.services.ollama_client import OllamaClient
 from app.services.retrieval_service import RetrievalService
+
+
+logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """You answer only from the supplied evidence.
@@ -160,8 +164,13 @@ class AnswerService:
                 return (*validated, attempt, "retry_success" if attempt else "normal")
             except AnswerGenerationError as exc:
                 last_error = exc
+                if attempt == 1 and exc.code == "EMPTY_ANSWER":
+                    logger.info("answer.empty_answer_fallback")
+                    return (*_grounded_fallback_payload(question, ("", False, "", [], [], []), evidence_by_id), attempt, "evidence_only_fallback")
                 if attempt == 1 or not _is_retryable_generation_error(exc):
                     raise
+                if exc.code == "EMPTY_ANSWER":
+                    logger.info("answer.empty_answer_retry")
                 prompt = build_retry_prompt(question, evidences, exc.code)
         if last_error:
             raise last_error
@@ -300,7 +309,7 @@ def validate_llm_payload(payload: dict[str, Any]) -> tuple[str, bool, str, list[
     if not _is_string_list(used_ids) or not _is_string_list(action_items) or not _is_string_list(exceptions):
         raise AnswerGenerationError("INVALID_RESPONSE_SCHEMA", "The model response arrays must contain only strings.")
     if not insufficient and not answer.strip():
-        raise AnswerGenerationError("INVALID_RESPONSE_SCHEMA", "The model response is missing an answer.")
+        raise AnswerGenerationError("EMPTY_ANSWER", "The model response is missing an answer.")
     return answer.strip(), insufficient, reason.strip(), list(used_ids), list(action_items), list(exceptions)
 
 
@@ -323,6 +332,7 @@ def _is_retryable_generation_error(exc: AnswerGenerationError) -> bool:
         "OLLAMA_EMPTY_RESPONSE",
         "INVALID_JSON",
         "INVALID_RESPONSE_SCHEMA",
+        "EMPTY_ANSWER",
         "INVALID_EVIDENCE_ID",
     }
 
@@ -353,13 +363,13 @@ def _grounded_fallback_payload(
 ) -> tuple[str, bool, str, list[str], list[str], list[str]]:
     _answer, insufficient, reason, used_ids, action_items, exceptions = validated
     selected_ids = [evidence_id for evidence_id in _dedupe_preserve_order(used_ids) if evidence_id in evidence_by_id]
-    if insufficient and "E1" in evidence_by_id:
+    if (insufficient or not selected_ids) and evidence_by_id:
         selected_ids = [_best_fallback_evidence_id(question, evidence_by_id)]
     if not selected_ids:
         return validated
     fallback_id = _best_grounded_fallback_id(question, selected_ids, evidence_by_id)
     evidence = evidence_by_id[fallback_id]
-    sentence = _first_content_sentence(evidence.content)
+    sentence = _best_content_sentence(question, evidence.content)
     if not sentence:
         return validated
     return f"근거에 따르면 {sentence}", False, reason, [fallback_id], action_items, exceptions
@@ -390,6 +400,21 @@ def _best_grounded_fallback_id(question: str, selected_ids: list[str], evidence_
     selected_score = _question_evidence_score(question, evidence_by_id[selected_id])
     best_score = _question_evidence_score(question, evidence_by_id[best_id])
     return best_id if best_score > selected_score + 0.5 else selected_id
+
+
+def _best_content_sentence(question: str, content: str) -> str:
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    terms = set(_fallback_terms(question))
+    scored: list[tuple[int, int, str]] = []
+    for index, line in enumerate(lines):
+        lowered = line.lower()
+        score = sum(1 for term in terms if term in lowered)
+        if score:
+            scored.append((score, -index, line))
+    body = max(scored)[2] if scored else lines[-1]
+    return re.split(r"(?<=[.!?。])\s+", body)[0].strip()
 
 
 def _selected_evidence_mismatch(question: str, used_ids: list[str], evidence_by_id: dict[str, Evidence]) -> bool:
@@ -593,6 +618,179 @@ _FALLBACK_STOPWORDS = {
     "가능한가요",
     "필요한가요",
     "있나요",
+    "where",
+    "what",
+    "when",
+    "how",
+    "many",
+    "much",
+    "the",
+    "must",
+    "be",
+    "is",
+    "are",
+    "to",
+    "for",
+}
+
+
+def _fallback_terms(text: str) -> list[str]:
+    terms: list[str] = []
+    for raw in re.findall(r"[0-9A-Za-z가-힣%\\]+", text.lower()):
+        term = raw
+        for suffix in _KOREAN_SUFFIXES:
+            if len(term) > len(suffix) + 1 and term.endswith(suffix):
+                term = term[: -len(suffix)]
+                break
+        if len(term) >= 2 and term not in _FALLBACK_STOPWORDS and term not in terms:
+            terms.append(term)
+        for compound, parts in _FALLBACK_COMPOUND_TERMS.items():
+            if compound in raw:
+                for part in parts:
+                    if part not in terms:
+                        terms.append(part)
+    return terms
+
+
+def _question_expects_concrete_fact(question: str) -> bool:
+    lowered = question.lower()
+    markers = (
+        "뭐",
+        "무엇",
+        "얼마",
+        "언제",
+        "기한",
+        "까지",
+        "조건",
+        "예외",
+        "규칙",
+        "규정",
+        "유형",
+        "종류",
+        "긴급",
+        "휴가",
+        "문자",
+        "서류",
+        "제출",
+        "보고서",
+        "비교",
+        "내용",
+        "어디",
+        "문구",
+        "조항",
+        "what",
+        "when",
+        "where",
+        "article",
+        "how many",
+        "how much",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _looks_unreadable(answer: str) -> bool:
+    cleaned = re.sub(r"[^0-9A-Za-z가-힣]", "", answer)
+    cjk = re.findall(r"[\u4e00-\u9fff]", answer)
+    hangul = re.findall(r"[가-힣]", answer)
+    latin = re.findall(r"[A-Za-z]", answer)
+    if len(cjk) >= 2 and not hangul and not latin:
+        return True
+    if len(cleaned) < 5:
+        return False
+    evidence_words = ("신청", "제출", "승인", "보고", "보관", "영업", "당일", "이내", "가능", "필요", "제한", "유형")
+    return bool(hangul) and not any(word in answer for word in evidence_words) and not re.search(r"[0-9A-Za-z]", answer)
+
+
+def _missing_supported_unit(question: str, answer: str, evidence_text: str) -> bool:
+    if not re.search(r"\bbusiness days?\b", evidence_text, flags=re.IGNORECASE):
+        return False
+    expects_deadline = re.search(r"\b\d+\s*(?:business\s*)?days?\b|[0-9]+\s*일|언제|기한|까지|며칠", question, flags=re.IGNORECASE)
+    if not expects_deadline:
+        return False
+    return ("영업" not in answer) and not re.search(r"\bbusiness days?\b", answer, flags=re.IGNORECASE)
+
+
+_KOREAN_SUFFIXES = (
+    "이어야",
+    "이어야하나요",
+    "하나요",
+    "인가요",
+    "인가",
+    "에서",
+    "으로",
+    "에게",
+    "까지",
+    "부터",
+    "에는",
+    "은",
+    "는",
+    "이",
+    "가",
+    "을",
+    "를",
+    "에",
+    "와",
+    "과",
+    "의",
+    "도",
+    "만",
+)
+
+_FALLBACK_TERM_ALIASES = {
+    "연차": ("annual", "leave", "vacation"),
+    "휴가": ("leave", "vacation"),
+    "긴급": ("emergency", "urgent", "same day"),
+    "긴급휴가": ("emergency", "urgent", "same day", "leave"),
+    "당일": ("same day",),
+    "출장": ("travel", "trip", "business trip"),
+    "보고서": ("report", "trip report"),
+    "출장보고서": ("trip report", "business trip report"),
+    "영수증": ("receipt", "receipts"),
+    "제출": ("submit", "submitted", "submission"),
+    "기한": ("deadline", "before", "within", "days"),
+    "신청": ("request", "requested"),
+    "며칠": ("days",),
+    "전": ("before", "in advance"),
+    "재택": ("remote", "work"),
+    "승인": ("approval", "approved"),
+    "식대": ("meal", "dinner", "allowance"),
+    "저녁": ("dinner", "meal"),
+    "보안": ("security",),
+    "비밀번호": ("password",),
+    "특수문자": ("special character", "%", "_", "backslash"),
+    "문서": ("document", "record"),
+    "계약": ("contract",),
+    "보관": ("retained", "retention", "preserve"),
+    "초안": ("draft",),
+    "삭제": ("delete", "deleted"),
+    "일반차로": ("general lane",),
+    "하이패스": ("hi-pass", "hipass"),
+    "위반": ("violation",),
+    "유형": ("type",),
+    "입구정보이상": ("entry information",),
+    "출구정보이상": ("exit information",),
+    "출구위반처리": ("exit violation",),
+}
+
+_FALLBACK_COMPOUND_TERMS = {
+    "출장보고서": ("출장", "보고서"),
+    "긴급휴가": ("긴급", "휴가"),
+    "비밀번호": ("보안",),
+    "특수문자": ("문자",),
+    "일반차로": ("일반", "차로"),
+    "위반유형": ("위반", "유형"),
+}
+
+_FALLBACK_STOPWORDS = {
+    "무엇",
+    "어떻게",
+    "알려줘",
+    "내용",
+    "규정",
+    "기준",
+    "가능한가요",
+    "필요한가요",
+    "하나요",
     "where",
     "what",
     "when",

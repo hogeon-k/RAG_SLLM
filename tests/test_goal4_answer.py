@@ -203,6 +203,41 @@ def test_answer_retries_once_for_malformed_json(tmp_path) -> None:
     assert "{bad" not in ollama.prompts[1][1]
 
 
+def test_empty_answer_retries_with_correction_prompt(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed(settings)
+    ollama = FakeOllamaClient([
+        json.dumps({"answer": "", "insufficient_evidence": False, "used_evidence_ids": [], "reason": ""}),
+        json.dumps({"answer": "Use the rule.", "insufficient_evidence": False, "used_evidence_ids": ["E1"], "reason": ""}),
+    ])
+    service = AnswerService(settings, FakeRetrievalService(_search_response([_result()])), ollama_client=ollama)
+
+    response = service.answer("leave")
+
+    assert response.answer == "Use the rule."
+    assert response.generation_retry_count == 1
+    assert "EMPTY_ANSWER" in ollama.prompts[1][1]
+
+
+def test_empty_answer_twice_uses_grounded_fallback(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed(settings)
+    ollama = FakeOllamaClient([
+        json.dumps({"answer": "", "insufficient_evidence": False, "used_evidence_ids": [], "reason": ""}),
+        json.dumps({"answer": "", "insufficient_evidence": False, "used_evidence_ids": ["E1"], "reason": ""}),
+    ])
+    service = AnswerService(settings, FakeRetrievalService(_search_response([_result()])), ollama_client=ollama)
+
+    response = service.answer("leave")
+
+    assert response.answer.startswith("근거에 따르면")
+    assert "Apply three days before leave." in response.answer
+    assert [item.evidence_id for item in response.used_evidence] == ["E1"]
+    assert response.verified_sources[0].chunk_id == "DOC-1-S001-C0000"
+    assert response.generation_mode == "evidence_only_fallback"
+    assert response.fallback_used is True
+
+
 def test_unknown_evidence_id_is_rejected(tmp_path) -> None:
     settings = _settings(tmp_path)
     _seed(settings)

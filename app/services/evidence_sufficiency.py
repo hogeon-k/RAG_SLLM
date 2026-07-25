@@ -67,7 +67,7 @@ def assess_evidence_sufficiency(question: str, retrieval: SearchResponse) -> Evi
         reason_code = "LEXICAL_COVERAGE_TOO_LOW"
         return _result(False, "LOW", reason_code, best, keyword_hit, exact_article_hit, lexical_coverage, vector_similarity, source_hint_match, version_intent_match, conflicting, len(results))
 
-    if exact_article_hit or phrase_hit or (cross_supported and lexical_coverage >= 0.34):
+    if exact_article_hit or phrase_hit or (cross_supported and lexical_coverage >= 0.34) or (keyword_hit and lexical_coverage >= 0.5):
         return _result(True, "HIGH", "STRONG_EVIDENCE", best, keyword_hit, exact_article_hit, lexical_coverage, vector_similarity, source_hint_match, version_intent_match, conflicting, len(results))
     if cross_supported and lexical_coverage >= 0.22:
         return _result(True, "MEDIUM", "SUPPORTED_EVIDENCE", best, keyword_hit, exact_article_hit, lexical_coverage, vector_similarity, source_hint_match, version_intent_match, conflicting, len(results))
