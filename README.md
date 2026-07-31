@@ -1,106 +1,288 @@
 # RAG_SLLM
 
-회사 규정, 법령, 업무 지침 문서를 로컬 PC에서 등록하고 검색하기 위한 Windows 데스크톱 RAG 프로그램입니다.
+회사 규정, 법령, 업무 지침이 담긴 Excel 문서를 등록하고 근거를 검색해 답변하는 Windows 데스크톱 RAG 애플리케이션입니다.
 
-현재 범위는 Goal 3까지입니다. `.xlsx` 문서 등록, 원본 저장, 엑셀 구조 추출, 조항 단위 청크 생성, SQLite FTS5 키워드 검색, `sentence-transformers` 로컬 임베딩, ChromaDB 벡터 검색, 하이브리드 검색을 제공합니다. Ollama 또는 sLLM 답변 생성은 아직 포함하지 않습니다.
+문서 원본과 추출 결과는 로컬 파일 및 SQLite에 저장하고, SQLite FTS5 키워드 검색과 ChromaDB 벡터 검색을 결합합니다. 검색된 근거는 Ollama 모델에 전달되며, 답변과 함께 실제 문서명·시트·조항·셀 범위를 확인할 수 있습니다.
 
-## 구조
+## 주요 기능
+
+### 문서 관리
+
+- `.xlsx` 문서 등록
+- 버전, 시행일, 개정일, 담당 부서 메타데이터 입력
+- 파일 크기, 확장자, Excel 구조, 시트 존재 여부 검증
+- SHA-256 및 통합 문서 내용 비교를 통한 중복 등록 방지
+- 등록 원본을 애플리케이션 데이터 경로에 별도 보관
+- 시트, 셀, 병합 범위, 수식과 캐시 값 추출
+- 조항·제목·문단 구조를 고려한 검색 청크 생성
+- 추출 결과와 원본 셀 참조 미리보기
+- 문서 재추출, 검색 인덱싱 및 재인덱싱
+- 문서를 `CURRENT` 또는 `ARCHIVED` 상태로 관리
+- 문서 삭제 시 원본, 추출 데이터, FTS 인덱스, 벡터 삭제
+- 문서를 삭제해도 기존 질문 이력의 출처 스냅샷은 보존
+
+### 검색과 답변
+
+- `keyword`: SQLite FTS5 키워드 검색
+- `vector`: `sentence-transformers` 임베딩과 ChromaDB 벡터 검색
+- `hybrid`: 키워드와 벡터 검색 결과를 가중 결합
+- 조항 번호, 질의 표현 일치도, 검색 순위, 문서 버전 의도를 반영한 재정렬
+- 기본적으로 현행 문서만 검색하고, 선택 시 보관 문서까지 포함
+- Ollama `/api/generate`를 이용한 JSON 형식의 근거 기반 답변 생성
+- 답변, 실행 항목, 예외 사항, 사용한 근거 ID를 검증
+- 근거가 없거나 약한 경우 답변을 만들지 않고 근거 부족으로 처리
+- 존재하지 않는 근거 ID, 오래된 청크, 비정상 응답을 검증
+- 답변과 함께 문서명, 시트명, 조항, 제목, 셀 범위, 셀 좌표, 원문 표시
+
+### 질문 이력
+
+- 성공, 근거 부족, 근거 없음, 실패 상태 저장
+- 질문, 답변, 검색 모드, 모델, 처리 시간, 사용 근거 수 확인
+- 질문·답변·문서·시트·조항·제목 통합 검색
+- 상태 및 날짜 범위 필터
+- 답변 생성 당시의 검증된 출처를 스냅샷으로 저장
+- 선택 이력 또는 전체 이력 삭제
+
+### 시스템 설정
+
+- 현재 데이터 경로와 검색·생성 설정 확인
+- Ollama 서버 및 설정 모델 사용 가능 여부 확인
+- `.env`를 통한 저장 경로, 모델, 검색, 문서 추출 설정 변경
+
+## 동작 구조
+
+```text
+Excel 문서
+  └─ 등록 및 원본 보관
+      └─ 시트·셀 구조 추출
+          └─ 조항 단위 청크 생성
+              ├─ SQLite FTS5 인덱스
+              └─ sentence-transformers 임베딩 → ChromaDB
+                      ↓
+              keyword / vector / hybrid 검색
+                      ↓
+                 근거 충분성 검사
+                      ↓
+                 Ollama 답변 생성
+                      ↓
+            검증된 출처와 질문 이력 저장
+```
+
+문서 처리 상태는 다음 순서로 진행됩니다.
+
+```text
+UPLOADED → PARSING → PARSED → INDEXING → COMPLETED
+                                      └→ 검색 인덱스 READY
+```
+
+재추출하면 기존 검색 인덱스는 `STALE` 상태가 되므로 재인덱싱해야 다시 검색할 수 있습니다.
+
+## 프로젝트 구조
 
 ```text
 app/
-  config/          환경 설정과 경로 관리
-  database/        SQLite 연결과 스키마
-  repositories/    SQLite 저장소 접근 계층
-  services/        문서 등록, 추출, 인덱싱, 검색 서비스
-  storage/         원본 파일 저장소와 ChromaDB 벡터 저장소
-  models/          문서, 청크, 검색 결과 모델
-  viewmodels/      PySide6 화면 상태와 작업 스레드
-  views/           PySide6 화면
-scripts/           더미 파일 생성, 파싱 점검, 검색 평가 스크립트
-tests/             자동 테스트
-data/              개발 DB, 업로드 원본, 벡터 DB, 테스트 산출물
-logs/              로컬 로그
-run.py             프로그램 실행 진입점
+  config/          환경 변수와 애플리케이션 경로 설정
+  database/        SQLite 연결 및 스키마 초기화
+  models/          문서, 검색, 답변, 이력 데이터 모델
+  repositories/    SQLite 데이터 접근 계층
+  services/        등록, 추출, 청크, 검색, 답변, 이력 서비스
+  storage/         원본 파일 및 ChromaDB 벡터 저장소
+  utils/           해시와 로깅 유틸리티
+  viewmodels/      화면 상태와 백그라운드 작업
+  views/           PySide6 데스크톱 UI
+scripts/           테스트 문서 생성, 스모크 테스트, 검색·답변 평가
+tests/             pytest 자동 테스트
+data/              기본 데이터 저장 경로
+logs/              애플리케이션 로그
+run.py             실행 진입점
 ```
 
 ## 요구 사항
 
+- Windows
 - Python 3.11
-- Windows PowerShell
+- Ollama
+- 기본 Ollama 모델: `llama3.2:3b`
 - 기본 임베딩 모델: `intfloat/multilingual-e5-small`
-- 벡터 저장소: 로컬 ChromaDB persistent client, 기본 경로 `data/vector_db`
+
+주요 Python 패키지는 다음과 같습니다.
+
+- `PySide6`
+- `openpyxl`
+- `python-dotenv`
+- `chromadb`
+- `sentence-transformers`
 
 ## 설치
 
+PowerShell에서 프로젝트 가상 환경을 만들고 의존성을 설치합니다.
+
 ```powershell
 cd C:\workspace\RAG_SLLM
+py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
+```
+
+테스트와 개발 도구까지 설치하려면 대신 다음 파일을 사용합니다.
+
+```powershell
 python -m pip install -r requirements-dev.txt
 ```
 
-`requirements.txt`에는 실행 의존성으로 `PySide6`, `openpyxl`, `python-dotenv`, `chromadb`, `sentence-transformers`가 포함됩니다.
+환경 파일을 생성합니다.
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Ollama를 실행하고 `.env`의 `OLLAMA_MODEL`에 지정된 모델을 준비합니다. 기본 설정을 사용할 경우 모델명은 `llama3.2:3b`입니다.
+
+```powershell
+ollama pull llama3.2:3b
+```
+
+`intfloat/multilingual-e5-small` 모델이 로컬에 없으면 최초 임베딩 또는 인덱싱 시 모델 파일 다운로드가 필요할 수 있습니다.
 
 ## 실행
 
 ```powershell
+.\.venv\Scripts\Activate.ps1
 python run.py
 ```
 
-`업무 RAG 규정 검색` 창이 열립니다. 문서 관리 화면에서 `.xlsx` 문서를 등록하고, 원본 구조를 추출한 뒤 검색 인덱스를 만들 수 있습니다.
+애플리케이션에는 다음 네 화면이 있습니다.
+
+1. `질의응답`: 검색 모드와 보관 문서 포함 여부를 선택하고 답변 및 근거 확인
+2. `문서 관리`: 문서 등록, 추출, 미리보기, 인덱싱, 상태 전환, 삭제
+3. `질문 이력`: 저장된 답변과 출처 스냅샷 조회, 필터, 삭제
+4. `시스템 설정`: 적용된 설정과 Ollama 상태 확인
+
+처음 사용할 때는 `문서 등록 → 내용 추출 → 검색 인덱싱 → 질의응답` 순서로 진행합니다.
 
 ## 환경 변수
 
-`.env.example`을 기준으로 `.env`를 만들 수 있습니다.
+설정은 프로젝트 루트의 `.env`에서 읽습니다. 빈 `APP_DATA_DIR`는 개발 환경에서 프로젝트의 `data` 디렉터리를 사용합니다. `APP_ENV=production`이고 `APP_DATA_DIR`가 비어 있으면 `%LOCALAPPDATA%\RAG_SLLM`을 사용합니다.
+
+### 애플리케이션과 저장소
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `APP_ENV` | `development` | 실행 환경 |
+| `APP_DATA_DIR` | 빈 값 | 데이터 저장 경로 |
+| `APP_LOG_LEVEL` | `INFO` | 로그 레벨 |
+
+기본 데이터 구성은 다음과 같습니다.
 
 ```text
-APP_EMBEDDING_MODEL=intfloat/multilingual-e5-small
-APP_EMBEDDING_DEVICE=auto
-APP_EMBEDDING_BATCH_SIZE=16
-APP_VECTOR_COLLECTION=rag_sllm_chunks
-APP_SEARCH_TOP_K=5
-APP_KEYWORD_CANDIDATE_K=20
-APP_VECTOR_CANDIDATE_K=20
-APP_KEYWORD_WEIGHT=0.3
-APP_VECTOR_WEIGHT=0.7
-APP_VECTOR_MIN_SIMILARITY=0.0
+data/
+  database/app.sqlite3   문서, 추출 결과, 인덱스 상태, 질문 이력
+  uploads/               등록한 Excel 원본
+  vector_db/             ChromaDB 벡터 데이터
+logs/                    실행 로그
 ```
 
-`APP_EMBEDDING_DEVICE=auto`는 CUDA가 가능하면 GPU를, 아니면 CPU를 사용합니다. `cuda`로 고정했는데 CUDA를 사용할 수 없으면 명확한 오류를 발생시킵니다.
+### Ollama와 답변 생성
 
-## 문서 등록과 추출
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama API 주소 |
+| `OLLAMA_MODEL` | `llama3.2:3b` | 답변 생성 모델 |
+| `OLLAMA_TIMEOUT_SECONDS` | `120` | API 제한 시간(초) |
+| `OLLAMA_NUM_CTX` | `4096` | 컨텍스트 크기 |
+| `OLLAMA_NUM_PREDICT` | `512` | 최대 생성 토큰 설정 |
+| `OLLAMA_TEMPERATURE` | `0.0` | 생성 temperature |
+| `OLLAMA_TOP_P` | `0.8` | 생성 top-p |
+| `OLLAMA_TOP_K` | `20` | 생성 top-k |
+| `OLLAMA_REPEAT_PENALTY` | `1.1` | 반복 패널티 |
+| `RETRIEVAL_TOP_K` | `5` | 답변 생성에 전달할 검색 결과 수 |
 
-지원 파일은 `.xlsx`입니다. 등록 시 파일 존재, 확장자, 크기, XLSX 구조, 시트 존재 여부를 검증하고 SHA-256으로 중복을 차단합니다. 원본은 `data/uploads/DOC-.../document.xlsx`에 복사되며 실제 회사 문서나 개발 DB는 테스트 스크립트가 수정하지 않습니다.
+### 문서 추출
 
-엑셀 추출 결과는 다음 테이블에 저장됩니다.
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `APP_MAX_XLSX_MB` | `50` | 등록 가능한 `.xlsx` 최대 크기(MB) |
+| `APP_CHUNK_MAX_CHARS` | `1500` | 청크 최대 문자 수 |
+| `APP_CHUNK_MIN_CHARS` | `80` | 청크 최소 문자 수 |
+| `APP_MAX_EXTRACTED_CELLS` | `200000` | 문서당 최대 추출 셀 수 |
+| `APP_INCLUDE_HIDDEN_SHEETS` | `false` | 숨김 시트 추출 여부 |
 
-- `document_sheets`: 시트 이름, 순서, 숨김 상태, 크기, 병합 범위 수
-- `document_cells`: 셀 좌표, 원문 텍스트, 수식, 캐시값, 병합 범위, 숨김 여부
-- `document_chunks`: 조항 또는 일반 문단 청크, article, title, cell_range, cell_refs, content_hash
+### 임베딩과 검색
 
-청크 생성은 조항 번호, 괄호 제목, 같은 행의 인접 제목 셀, 병합 셀 앵커값, 두 행 이상의 빈 행 경계, 참고/비고/주의/안내 독립 라벨 행을 규정 문서 구조 규칙으로 처리합니다.
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `APP_EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | 임베딩 모델 |
+| `APP_EMBEDDING_DEVICE` | `auto` | `auto`, `cpu`, `cuda` 장치 선택 |
+| `APP_EMBEDDING_BATCH_SIZE` | `16` | 임베딩 배치 크기 |
+| `APP_VECTOR_COLLECTION` | `rag_sllm_chunks` | ChromaDB 컬렉션 이름 |
+| `APP_SEARCH_TOP_K` | `5` | 일반 검색의 기본 결과 수 |
+| `APP_KEYWORD_CANDIDATE_K` | `20` | 키워드 검색 후보 수 |
+| `APP_VECTOR_CANDIDATE_K` | `20` | 벡터 검색 후보 수 |
+| `APP_KEYWORD_WEIGHT` | `0.3` | 하이브리드 키워드 가중치 |
+| `APP_VECTOR_WEIGHT` | `0.7` | 하이브리드 벡터 가중치 |
+| `APP_VECTOR_MIN_SIMILARITY` | `0.0` | 벡터 후보 최소 유사도 |
 
-## 검색 인덱스
+`APP_EMBEDDING_DEVICE=auto`는 CUDA를 사용할 수 있으면 GPU를, 그렇지 않으면 CPU를 선택합니다. `cuda`로 고정했는데 CUDA를 사용할 수 없으면 인덱싱 중 오류가 발생합니다.
 
-Goal 3 검색 인덱스는 SQLite와 ChromaDB를 함께 사용합니다.
+## 문서 등록과 검색 범위
 
-- `chunk_search_fts`: SQLite FTS5 키워드 검색 테이블. 한국어 부분 문자열 검색을 위해 trigram tokenizer를 사용합니다.
-- `document_search_indexes`: 문서별 인덱싱 상태, 모델명, 모델 fingerprint, 청크 수, FTS 수, 벡터 수, content fingerprint를 저장합니다.
-- ChromaDB collection: 기본 `rag_sllm_chunks`. 벡터에는 청크 ID와 문서 ID를 함께 저장하고, 검색 결과 본문은 항상 SQLite의 최신 청크에서 다시 읽습니다.
+지원 형식은 `.xlsx`입니다. 등록 시 입력한 원본은 `data/uploads/DOC-.../document.xlsx` 형식의 내부 경로에 복사됩니다.
 
-문서가 `PARSED` 상태일 때 인덱싱할 수 있습니다. 인덱싱 성공 후 문서 상태는 `COMPLETED`, 인덱스 상태는 `READY`가 됩니다. 같은 문서를 다시 추출하면 기존 검색 인덱스는 `STALE`로 표시되어 재인덱싱 대상이 됩니다.
+기본 검색 대상은 다음 조건을 모두 만족하는 문서입니다.
+
+- 문서 처리 상태가 `COMPLETED`
+- 검색 인덱스 상태가 `READY`
+- 업무 상태가 `CURRENT`
+
+질의응답 화면에서 `Include archived`를 선택하면 `ARCHIVED` 문서도 검색 범위에 포함됩니다. 문서를 현행 상태로 승격하면 같은 문서 계열의 기존 현행 문서를 보관 상태로 전환할 수 있습니다.
 
 ## 검색 방식
 
-- `keyword`: FTS5 `MATCH`와 BM25 점수를 사용합니다.
-- `vector`: 질문을 `query:` prefix로 임베딩하고 ChromaDB에서 cosine 거리 기반 후보를 찾습니다.
-- `hybrid`: 키워드 점수와 벡터 점수를 0~1로 정규화한 뒤 기본 가중치 `0.3 / 0.7`로 결합합니다.
+### Keyword
 
-문서 임베딩은 `passage:` prefix를 사용합니다. 빈 입력, NaN/inf, 0 norm, 서로 다른 차원 벡터는 인덱싱 오류로 차단합니다.
+SQLite FTS5의 trigram tokenizer와 BM25 점수를 사용합니다. 한글 부분 문자열 검색과 조항 번호 검색을 지원하며 검색 점수는 결합 전에 정규화됩니다.
 
-## 테스트용 더미 엑셀
+### Vector
 
-Goal 1, 2, 2.5 검증용 XLSX와 manifest는 아래 명령으로 생성하고 점검합니다.
+문서 청크는 `passage:` 접두사, 질의는 `query:` 접두사를 사용해 임베딩합니다. ChromaDB의 cosine 거리에서 유사도를 계산합니다.
+
+### Hybrid
+
+정규화된 키워드 점수와 벡터 점수를 기본 가중치 `0.3 / 0.7`로 결합합니다. 조항의 정확한 일치, 두 검색 방식의 순위, 질의 토큰 포함 정도, 시트·조항·제목 일치, 현행·이전 규정 의도도 최종 순위에 반영합니다.
+
+## 답변과 근거 검증
+
+검색 결과가 있더라도 바로 답변을 생성하지 않습니다. 먼저 조항 일치, 키워드와 벡터의 교차 지지, 표현 일치도, 출처 힌트, 현행·이전 규정 의도, 근거 간 충돌을 검사합니다.
+
+근거가 충분하면 Ollama에 질문과 검색 근거를 전달합니다. 응답은 정해진 JSON 스키마로 제한되며 다음 항목을 검증합니다.
+
+- 답변 본문
+- 실행 항목
+- 예외 사항
+- 근거 부족 여부와 사유
+- 실제로 제공된 근거 ID만 사용했는지 여부
+- 답변에 사용된 청크와 문서가 현재 저장소에 존재하는지 여부
+
+검증을 통과하지 못한 모델 응답은 한 번 재생성을 시도합니다. 이후에도 적합하지 않으면 코드에 정의된 근거 기반 대체 응답 또는 안전한 답변 거부로 처리합니다.
+
+## 질문 이력과 문서 삭제
+
+질문 처리 결과는 SQLite의 `question_histories`에 저장되고, 사용한 원문은 `question_history_sources`에 별도 스냅샷으로 저장됩니다.
+
+문서를 삭제하면 현재 문서 데이터와 검색 인덱스는 제거되지만, 과거 답변을 확인할 수 있도록 질문 이력과 당시 출처 스냅샷은 유지됩니다. 질문 이력은 이력 화면에서 별도로 삭제할 수 있습니다.
+
+## 검증과 테스트
+
+전체 Python 구문과 자동 테스트를 확인합니다.
+
+```powershell
+python -m compileall app scripts run.py
+python -m pytest -q
+python -m pip check
+```
+
+테스트용 Excel 문서를 생성하고 구조를 확인할 수 있습니다.
 
 ```powershell
 python scripts/generate_goal2_test_workbooks.py
@@ -108,37 +290,40 @@ python scripts/verify_goal2_test_workbooks.py
 python scripts/inspect_goal2_parsing.py
 ```
 
-생성 위치는 `data/test_workbooks/`입니다. 휴가규정 기준 조항은 `제8조(연차휴가 신청)`과 `제8조의2(긴급휴가)`입니다. main과 duplicate의 SHA-256은 같고, modified는 같은 위치의 문구가 `3일 전`에서 `5일 전`으로 바뀌어 SHA-256이 달라집니다.
-
-## 검색 평가 스크립트
-
-가짜 임베딩으로 빠르게 검색 흐름을 검증합니다.
+실제 임베딩 모델을 사용하는 검색 스모크 테스트는 다음 순서로 실행합니다.
 
 ```powershell
-python scripts/evaluate_goal3_retrieval.py
-```
-
-실제 `intfloat/multilingual-e5-small` 모델 로딩과 로컬 ChromaDB 검색까지 확인합니다. 최초 실행 시 Hugging Face 모델 다운로드가 필요할 수 있습니다.
-
-```powershell
+python scripts/generate_goal2_test_workbooks.py
 python scripts/run_goal3_retrieval_smoke.py
 ```
 
-두 스크립트는 임시 DB와 임시 벡터 DB를 사용하며 실제 개발 DB와 등록 원본 파일을 수정하지 않습니다.
-
-## 전체 검증
+Ollama 연결 및 JSON 답변 생성 확인:
 
 ```powershell
-python -m compileall app scripts run.py
-python -m pytest -q
+python scripts/run_goal4_ollama_smoke.py
 ```
 
-의존성 충돌은 다음 명령으로 확인합니다.
+Ollama 답변과 질문 이력 저장 확인:
 
 ```powershell
-python -m pip check
+python scripts/run_goal5_history_smoke.py
 ```
 
-## Git 제외 대상
+검색·답변 평가 스크립트의 옵션은 다음 명령으로 확인할 수 있습니다.
 
-`.env`, 실제 회사 문서, SQLite DB, ChromaDB 벡터 DB, 업로드 원본, 로그, 더미 XLSX 산출물은 Git에 커밋하지 않습니다.
+```powershell
+python scripts/run_goal6_evaluation.py --help
+```
+
+평가 모드는 `retrieval-only`, `fake-answer`, `live-ollama`를 지원합니다. 평가 보고서는 기본적으로 `data/test_workbooks/goal6_reports`에 생성되며, README에는 실행하지 않은 평가 결과나 성능 수치를 기재하지 않습니다.
+
+## Git에서 제외되는 로컬 데이터
+
+다음 항목은 `.gitignore`에 의해 버전 관리에서 제외됩니다.
+
+- `.env`
+- SQLite 데이터베이스
+- 등록한 Excel 원본
+- ChromaDB 벡터 데이터
+- 로그
+- 생성한 테스트 문서와 평가 산출물
